@@ -7,3 +7,8 @@ ipywidgets
 
 # Optional: load KAGGLE_* from .env
 python-dotenv
+
+# FSQ OS Places download/filter pipeline
+duckdb
+huggingface_hub
+pyarrow
