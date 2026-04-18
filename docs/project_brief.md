@@ -2,7 +2,19 @@
 
 Essentially, tinder, except for date night ideas.
 
-### Back end
+Constraint: We must use the data in the data directory for at least some part of our application
+
+### Back end (python)
+
+USER INPUTS:
+- Location: suburb or postcode (typed). App can also ping users location
+- Travel radius: in km, or "walking / public transport / driving".
+- Date type / vibe: e.g. casual, romantic, active, foodie, nerdy, outdoorsy. Maps to a curated subset of Foursquare category IDs.
+- Budget $ / $$ / $$$ / $$$$.
+- Time window: start time + duration (e.g. "Saturday 6pm, 3 hours").
+- Party size: defaults to 2, though adjustable (eg double date)
+- Dietary / accessibility constraints: free‑text, passed into the LLM prompt.
+
 * The app will pull a users location. Or ask them where they want to go on a date. Possibly ask them a set of questions about where they want to go on a date as well.
 	* User specifiable parameters:
 	* Date type preference
@@ -20,6 +32,7 @@ Essentially, tinder, except for date night ideas.
 
 Note
 * If the date involves a restaurant, then an agent may call up the place, and make the booking for them. note, will need to feed in context to the agent. booking for x many people
+* Need a layer where the LLM can use it's knowledge of location(s) and creativity
 
 
 ### Front end

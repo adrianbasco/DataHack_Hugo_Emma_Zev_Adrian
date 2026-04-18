@@ -12,3 +12,7 @@ python-dotenv
 duckdb
 huggingface_hub
 pyarrow
+
+# Date Night filtering pipeline
+pandas
+pyyaml
