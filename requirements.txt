@@ -1,0 +1,9 @@
+# main.ipynb — KaggleDatasetAdapter.PANDAS
+kagglehub[pandas-datasets]
+
+# Notebook (progress bars / widgets)
+jupyter
+ipywidgets
+
+# Optional: load KAGGLE_* from .env
+python-dotenv
