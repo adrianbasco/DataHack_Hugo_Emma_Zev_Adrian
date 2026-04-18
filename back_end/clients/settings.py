@@ -14,18 +14,25 @@ class WeatherConfigurationError(RuntimeError):
     """Raised when weather-backed code is configured incorrectly."""
 
 
-def _read_float(name: str, default: float) -> float:
+class OpenRouterConfigurationError(RuntimeError):
+    """Raised when OpenRouter-backed code is configured incorrectly."""
+
+
+def _read_float(
+    name: str,
+    default: float,
+    *,
+    error_cls: type[RuntimeError] = MapsConfigurationError,
+) -> float:
     raw = os.getenv(name)
     if raw is None or raw == "":
         return default
     try:
         value = float(raw)
     except ValueError as exc:
-        raise MapsConfigurationError(
-            f"{name} must be a float, got {raw!r}."
-        ) from exc
+        raise error_cls(f"{name} must be a float, got {raw!r}.") from exc
     if value <= 0:
-        raise MapsConfigurationError(f"{name} must be positive, got {value}.")
+        raise error_cls(f"{name} must be positive, got {value}.")
     return value
 
 
@@ -34,6 +41,7 @@ def _read_optional_float(
     *,
     minimum: float | None = None,
     maximum: float | None = None,
+    error_cls: type[RuntimeError] = WeatherConfigurationError,
 ) -> float | None:
     raw = os.getenv(name)
     if raw is None or raw == "":
@@ -41,17 +49,11 @@ def _read_optional_float(
     try:
         value = float(raw)
     except ValueError as exc:
-        raise WeatherConfigurationError(
-            f"{name} must be a float, got {raw!r}."
-        ) from exc
+        raise error_cls(f"{name} must be a float, got {raw!r}.") from exc
     if minimum is not None and value < minimum:
-        raise WeatherConfigurationError(
-            f"{name} must be >= {minimum}, got {value}."
-        )
+        raise error_cls(f"{name} must be >= {minimum}, got {value}.")
     if maximum is not None and value > maximum:
-        raise WeatherConfigurationError(
-            f"{name} must be <= {maximum}, got {value}."
-        )
+        raise error_cls(f"{name} must be <= {maximum}, got {value}.")
     return value
 
 
@@ -60,6 +62,7 @@ def _read_optional_int(
     *,
     minimum: int | None = None,
     maximum: int | None = None,
+    error_cls: type[RuntimeError] = WeatherConfigurationError,
 ) -> int | None:
     raw = os.getenv(name)
     if raw is None or raw == "":
@@ -67,35 +70,39 @@ def _read_optional_int(
     try:
         value = int(raw)
     except ValueError as exc:
-        raise WeatherConfigurationError(
-            f"{name} must be an integer, got {raw!r}."
-        ) from exc
+        raise error_cls(f"{name} must be an integer, got {raw!r}.") from exc
     if minimum is not None and value < minimum:
-        raise WeatherConfigurationError(
-            f"{name} must be >= {minimum}, got {value}."
-        )
+        raise error_cls(f"{name} must be >= {minimum}, got {value}.")
     if maximum is not None and value > maximum:
-        raise WeatherConfigurationError(
-            f"{name} must be <= {maximum}, got {value}."
-        )
+        raise error_cls(f"{name} must be <= {maximum}, got {value}.")
     return value
 
 
-def _read_int(name: str, default: int, *, minimum: int = 0) -> int:
+def _read_int(
+    name: str,
+    default: int,
+    *,
+    minimum: int = 0,
+    error_cls: type[RuntimeError] = MapsConfigurationError,
+) -> int:
     raw = os.getenv(name)
     if raw is None or raw == "":
         return default
     try:
         value = int(raw)
     except ValueError as exc:
-        raise MapsConfigurationError(
-            f"{name} must be an integer, got {raw!r}."
-        ) from exc
+        raise error_cls(f"{name} must be an integer, got {raw!r}.") from exc
     if value < minimum:
-        raise MapsConfigurationError(
-            f"{name} must be >= {minimum}, got {value}."
-        )
+        raise error_cls(f"{name} must be >= {minimum}, got {value}.")
     return value
+
+
+def _read_optional_string(name: str) -> str | None:
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    value = raw.strip()
+    return value or None
 
 
 @dataclass(frozen=True)
@@ -192,8 +199,17 @@ class WeatherSettings:
             forecast_base_url=(
                 os.getenv("WEATHER_FORECAST_BASE_URL") or "https://api.open-meteo.com/v1"
             ),
-            timeout_seconds=_read_float("WEATHER_TIMEOUT_SECONDS", 10.0),
-            retry_count=_read_int("WEATHER_RETRY_COUNT", 1, minimum=0),
+            timeout_seconds=_read_float(
+                "WEATHER_TIMEOUT_SECONDS",
+                10.0,
+                error_cls=WeatherConfigurationError,
+            ),
+            retry_count=_read_int(
+                "WEATHER_RETRY_COUNT",
+                1,
+                minimum=0,
+                error_cls=WeatherConfigurationError,
+            ),
             max_forecast_days=max_forecast_days or 14,
             hourly_precipitation_mm_threshold=(
                 _read_optional_float(
@@ -219,4 +235,56 @@ class WeatherSettings:
                 )
                 or 40.0
             ),
+        )
+
+
+@dataclass(frozen=True)
+class OpenRouterSettings:
+    """Settings for OpenRouter chat completions and tool use."""
+
+    api_key: str
+    base_url: str = "https://openrouter.ai/api/v1"
+    default_model: str | None = None
+    timeout_seconds: float = 45.0
+    retry_count: int = 1
+    max_tool_round_trips: int = 8
+    http_referer: str | None = None
+    app_title: str | None = None
+
+    @classmethod
+    def from_env(cls) -> "OpenRouterSettings":
+        """Load OpenRouter settings from environment variables."""
+
+        api_key = _read_optional_string("OPENROUTER_API_KEY")
+        if api_key is None:
+            raise OpenRouterConfigurationError(
+                "OPENROUTER_API_KEY is required for OpenRouter client calls."
+            )
+
+        return cls(
+            api_key=api_key,
+            base_url=(
+                _read_optional_string("OPENROUTER_BASE_URL")
+                or "https://openrouter.ai/api/v1"
+            ),
+            default_model=_read_optional_string("OPENROUTER_MODEL"),
+            timeout_seconds=_read_float(
+                "OPENROUTER_TIMEOUT_SECONDS",
+                45.0,
+                error_cls=OpenRouterConfigurationError,
+            ),
+            retry_count=_read_int(
+                "OPENROUTER_RETRY_COUNT",
+                1,
+                minimum=0,
+                error_cls=OpenRouterConfigurationError,
+            ),
+            max_tool_round_trips=_read_int(
+                "OPENROUTER_MAX_TOOL_ROUND_TRIPS",
+                8,
+                minimum=1,
+                error_cls=OpenRouterConfigurationError,
+            ),
+            http_referer=_read_optional_string("OPENROUTER_HTTP_REFERER"),
+            app_title=_read_optional_string("OPENROUTER_APP_TITLE"),
         )
