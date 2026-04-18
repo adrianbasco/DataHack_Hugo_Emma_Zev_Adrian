@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from back_end.date_night import VIBES, filter_places_by_vibes, load_allowlist  # noqa: E402
+from back_end.catalog import VIBES, filter_places_by_vibes, load_allowlist  # noqa: E402
 
 PLACES_PATH = REPO_ROOT / "data" / "au_places.parquet"
 

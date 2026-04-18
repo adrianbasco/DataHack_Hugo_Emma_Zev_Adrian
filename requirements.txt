@@ -14,5 +14,6 @@ huggingface_hub
 pyarrow
 
 # Date Night filtering pipeline
+httpx
 pandas
 pyyaml

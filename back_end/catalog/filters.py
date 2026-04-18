@@ -12,7 +12,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from back_end.date_night.categories import Allowlist
+from back_end.catalog.categories import Allowlist
 
 logger = logging.getLogger(__name__)
 

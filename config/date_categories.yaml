@@ -4,7 +4,7 @@
 # (e.g. "Dining and Drinking > Restaurant"). These paths match the
 # `category_label` column of data/categories.parquet exactly.
 #
-# The builder (back_end/date_night/categories.py) expands each path to
+# The builder (`back_end/catalog/categories.py`) expands each path to
 # include ALL descendants in the Foursquare taxonomy. So listing
 # "Dining and Drinking > Restaurant" automatically includes Italian,
 # Thai, Brazilian, etc.

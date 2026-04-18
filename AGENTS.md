@@ -7,3 +7,13 @@ Loud logging. If something breaks, make sure to loudly emit an error or failure.
 Pay close attention to the non happy path. Use your intelligence to ensure that non-happy-path bugs do not occur. The happy path will not always be hit - it's your job to ensure that when the happy path is not hit, that the program behaves well. 
 
 Use only the .parquet files in the data/ directory. Don't use any csv files. 
+
+Do not write out these instructions in the docs. 
+
+Put text saying **LLM GENERATED** at the top of any docs you create
+
+Please liberally create test cases that prevent whole classes of errors. Also, whenever you encounter a bug, please write a new test case to prevent that family of bugs from occurring again. 
+
+All networking should be async.
+
+Please keep the repo neat by using folders where necessary
