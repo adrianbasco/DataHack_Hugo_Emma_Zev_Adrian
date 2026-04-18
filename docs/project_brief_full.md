@@ -33,7 +33,8 @@ typed request.
 - **Travel radius**: in km, plus transport mode (walking / public transport /
   driving).
 - **Vibe / date type**: casual, romantic, active, foodie, nerdy, outdoorsy,
-  etc. Mapped to a curated allowlist of Foursquare category IDs.
+  etc. Fed into the embedding retrieval query and the curator LLM's prompt
+  — not mapped to a hand-curated category allowlist.
 - **Budget**: $ / $$ / $$$ / $$$$.
 - **Time window**: start time + duration (e.g. "Saturday 6pm, 3 hours").
 - **Party size**: defaults to 2, adjustable (e.g. double date).
@@ -42,62 +43,169 @@ typed request.
 
 ## End-to-end flow
 
+The pipeline is designed around a simple principle: do the cheapest filter
+first, and never spend an expensive call (Maps enrichment, LLM tokens) on
+something that was never going to be a date in the first place.
+
 1. User fills out the input form and submits.
-2. Back end filters the parquet dataset by vibe → category allowlist,
-   location + radius, and budget where the data supports it.
-   Plan status: planned in `docs/plans/backend-search-and-filtering.md`.
-3. For the filtered shortlist, the back end hits Google Maps in a single
-   enrichment pass per place:
-   - confirm the place still exists,
-   - pull opening hours and check them against the user's time window,
-   - pull the place rating so low-rated places can be dropped,
-   - resolve photos and a canonical Maps link.
-   Plan status: planned in `docs/plans/backend-place-enrichment.md`.
-4. The back end sends the surviving candidate pool to the LLM and asks it to
-   propose multiple full date plans (not single venues — proper sequences
-   like drinks → dinner → dessert, or activity → food → nightcap).
-   Plan status: planned in `docs/plans/llm-planning-layer.md`.
-5. For each proposed plan, the back end verifies feasibility through Google
-   Maps: travel times between stops, transport leg detail, and whether the
-   whole thing fits the time window.
-6. For outdoor / active vibes, the back end checks a weather API over the
-   date's time window and rejects plans the forecast would obviously ruin.
-7. Verified plans stream back to the front end as cards. The user swipes.
-8. Right-swipe → plan lands in "saved dates", with a detail view (timeline,
-   photos, maps links, transport steps) and a share button.
-9. If the plan includes a restaurant, the user can trigger the booking agent
-   from the detail view. The agent calls the restaurant and books.
+2. **Deterministic cut (parquet, free).** Back end filters the places
+   parquet by location + radius, opening hours against the time window,
+   and a minimal hard-no category list (petrol stations, medical, hardware,
+   automotive, supermarkets, storage — categorically never a date). This
+   is cost hygiene, not taste curation. Typical pool: 200–500 candidates.
+3. **Embedding retrieval (cheap, no per-request LLM tokens).** Back end
+   embeds the user's intent ("romantic Saturday evening date spot, $$,
+   Fitzroy") and pulls the top-K (~60) nearest candidates from a
+   pre-computed place embedding index built offline from the FSQ dataset.
+   This is a soft vibe filter — it uses the embedding model's implicit
+   world knowledge of what categories of place go with what kinds of date,
+   without us writing any taste rules down.
+4. **Maps enrichment (bounded, paid).** Back end hits Google Maps for the
+   top-K only, pulling rating + review count, a couple of top review
+   snippets, Places attributes (`reservable`, `romantic`, `outdoorSeating`,
+   `liveMusic`, etc.), confirmed hours, price tier, photo refs, and a
+   canonical Maps URL.
+5. **LLM curator rerank (cheap, batched, no tools).** Back end sends the
+   enriched candidates to a small model that scores each for date-worthiness
+   given the user's specific vibe / time / budget / dietary free-text. This
+   is where taste lives. Survivors become the curated pool the planners
+   work from.
+6. **Anchor seeding (deterministic, MMR).** Back end picks N diverse anchor
+   venues from the curated pool using max-marginal-relevance: quality term
+   × diversity penalty across category, geography, and price tier. Anchors
+   are guaranteed to be different kinds of night out, not N variants of the
+   same thing.
+7. **Planner agents (one per anchor, in parallel, tool-using).** Each agent
+   is a tool-using LLM that builds one full date around its assigned
+   anchor — drinks → dinner → dessert, activity → food → nightcap, etc.
+   Agents pull additional stops from the curated pool via a tool, check
+   opening hours and travel times via Maps tools, and check the weather.
+   Agents don't see each other; diversity is already baked in by anchor
+   selection.
+8. **Deterministic feasibility pass.** Travel times between stops, time
+   window fit, transport leg detail, weather gate for outdoor vibes,
+   schema validation. Plans that fail are rejected loudly, not silently
+   patched.
+9. Verified plans stream back to the front end as cards. The user swipes.
+10. Right-swipe → plan lands in "saved dates", with a detail view
+    (timeline, photos, maps links, transport steps) and a share button.
+11. If the plan includes a restaurant, the user can trigger the booking
+    agent from the detail view. The agent calls the restaurant and books.
 
 ## The LLM's job
 
-The LLM is not a search engine. It is the creative layer.
+The LLM shows up in two distinct places with very different roles. Keeping
+them separate matters; conflating them is where bad design happens.
 
-- It receives the enriched candidate pool (places that already survived
-  existence, opening hours, and rating checks) plus the user's constraints.
-- It is prompted to use its own knowledge of the area and its creativity to
-  stitch stops into a coherent series of events — a date with a narrative
-  arc, not a ranked list of venues.
-- It must only choose venue stops from the supplied candidate pool. Venues
-  it invents are rejected.
-- It may add non-venue connective tissue ("walk along the river between
-  stops", "grab the tram on Swanston") as narrative colour, because that
-  kind of thing cannot be anchored to a Foursquare ID.
-- For each plan it also produces a short hook: a title and a one-line vibe
-  summary that becomes the headline on the swipe card.
-- Travel times and transport leg detail (mode, line, departure) are **not**
-  taken from the LLM — those come from Google Maps, because LLMs hallucinate
-  them.
+### 1. Curator (cheap, no tools, batched)
+
+After Maps enrichment, the curator LLM scores each of the ~60 candidates
+0–3 for date-worthiness given the user's specific vibe, time, budget, and
+any dietary / accessibility free-text. It sees per-place enriched data —
+name, fine-grained category, rating, review count, top review snippets,
+Places attributes, price tier — and its only job is *"is this a date spot
+for this user, for this occasion, yes or no, how strongly"*.
+
+- This is where taste judgement lives. No hand-curated allowlist.
+- No tools. One small-model call per batch of 30–50 candidates.
+- Output: a pruned curated pool (drop score ≤ 1), plus the scores so the
+  anchor selector can use them as the quality term.
+
+### 2. Planner agent (one per anchor, tool-using, bounded)
+
+Given one anchor venue and the curated pool, a planner agent builds a
+single full date around that anchor. Tools:
+
+- `find_complementary_places(anchor, vibe, type_hint)` — queries the
+  curated pool for neighbours to stitch in.
+- `get_place_details(place_id)` — Maps enrichment on demand.
+- `get_route(from, to, mode, depart_time)` — Maps Routes.
+- `get_weather(datetime, location)` — weather check.
+- `finalize_plan(stops, hook, description)` — emits the plan.
+
+Rules for the planner agent:
+
+- Venue stops come only from the curated pool, always via tool results.
+  Invented venues are rejected.
+- Non-venue connective tissue is allowed and encouraged as narrative
+  colour ("walk along the river between stops", "grab the tram on
+  Swanston") — that kind of thing cannot be anchored to a Foursquare ID
+  and is what makes the date feel like a date, not a spreadsheet.
+- Travel times and transport leg detail (mode, line, departure) are not
+  produced by the LLM — they come from the `get_route` tool, because LLMs
+  hallucinate them.
+- Each plan gets a short LLM-written hook (title + one-line vibe) for the
+  swipe card and stop-level descriptions for the detail view.
+- Each agent has a hard iteration cap and wall-clock timeout, and fails
+  loudly on exceeding either.
 
 ## Google Maps's job
 
-Google Maps is the ground-truth layer. It is called in two places:
+Google Maps is the ground-truth layer. It is called in three places, and
+cost is bounded by the pool being small by the time Maps is hit:
 
-- **Per place (enrichment pass)**: existence, opening hours, rating, photos,
-  canonical Maps URL. Preferably in one request per place to keep API cost
-  down.
-- **Per plan (feasibility pass)**: travel time between each pair of
-  consecutive stops, plus transport leg detail for the UI. If the plan does
-  not fit the time window, it is rejected rather than silently trimmed.
+- **Bulk enrichment (top-K only)**: after embedding retrieval narrows the
+  pool to ~60, the back end pulls existence, opening hours, rating +
+  review count, review snippets, Places attributes, price tier, photo
+  refs, and a canonical Maps URL for each candidate. This is the
+  expensive pass but it's capped at K, not the full 200–500 filtered
+  pool.
+- **On-demand during planning**: planner agents can call Maps via tools
+  for extra detail while they stitch a plan — usually `get_place_details`
+  for a venue the curator surfaced but that needs more info, and
+  `get_route` for travel legs.
+- **Final feasibility pass**: travel time between each pair of
+  consecutive stops for the chosen plan, plus transport leg detail (mode,
+  line, departure) for the UI. If the plan does not fit the time window
+  it is rejected, not silently trimmed.
+
+## Place embedding index
+
+A pre-computed vector index over the FSQ places parquet. Built once,
+offline, not per request.
+
+- **Input per place**: `"{name} — {fsq_category_path} — {suburb}"`, plus
+  any other short signal the parquet gives us (price tier, popularity).
+  The leaf category ("Neapolitan Pizza Restaurant", "Jazz Club", "Wine
+  Bar") carries most of the information; the top-level categories are
+  too coarse.
+- **Model**: an open embedding model (e.g. `bge-small-en` or similar)
+  run at index-build time. No runtime dependency on a paid embedding API.
+- **Query-time cost**: one embedding of the user's intent string, plus a
+  nearest-neighbour lookup. Milliseconds.
+- **Role in the pipeline**: a soft vibe filter that cheaply reduces the
+  geo/time-filtered pool (~200–500) to the top-K (~60) before the paid
+  Maps enrichment pass. It is not the taste call — the curator LLM is.
+  It just has to be good enough to keep the obviously-right stuff in the
+  top-K and the obviously-wrong stuff out.
+- **Failure mode**: places with uninformative names/categories may not
+  cluster well in embedding space. Mitigation: widen K (e.g. 100), and
+  optionally blend the embedding score with popularity/rating so
+  well-known places get a bump into the enrichment pool even if their
+  text description is weak.
+
+## Plan diversity via anchor seeding
+
+The problem: if you spin up N planner agents on the same curated pool,
+they converge on the same obvious "best" venues. Diversity is a property
+of how the inputs are sliced, not a property of the LLM.
+
+- **Anchor selection is deterministic.** Given the curated pool with
+  curator scores, the back end picks N anchors by max-marginal-relevance:
+  each new anchor maximises `curator_score × bayesian_rating − λ ·
+  similarity(already_picked)`.
+- **Similarity is a weighted combo of**: category overlap, geographic
+  distance (suburb or lat/lon clusters), and price tier.
+- **Each planner agent receives one anchor**, the curated pool (with
+  peer anchors in a blocklist so they aren't reused as the same role),
+  and the user's constraints. Agents don't know about each other.
+- **Safety net**: after agents return, compute Jaccard overlap on venue
+  IDs across pairs of plans. If any pair exceeds a threshold (~60%), the
+  lower-scoring plan is dropped or re-run with an explicit "avoid these
+  venues" instruction.
+- **Small-pool behaviour**: if MMR cannot find N sufficiently-diverse
+  anchors (small city, narrow vibe), the system generates fewer cards
+  rather than force-fit ones that aren't really different.
 
 ## Weather
 
@@ -186,8 +294,14 @@ Listing these so they don't creep back in mid-build.
 - **Browser geolocation permission**. Location is typed or inferred.
 - **Time-sensitive / live events** (concerts, markets, one-off gigs). The
   Foursquare dataset is static and we're not wiring up an events feed.
-- **Plan diversity algorithm** across a deck. Separate design question; not
-  tackled in this build.
+- **Hand-curated date-worthiness allowlist.** Taste judgement is delegated
+  to the curator LLM, grounded in Maps-enriched data. The only curated
+  list is the hard-no category list (petrol stations, medical, etc.),
+  which is cost hygiene, not taste.
+- **Fully agentic end-to-end planning.** The planner agents have tools,
+  but the candidate curation and diversity selection are deliberately
+  kept deterministic / cheap-LLM. A single agent choosing every venue
+  from scratch with tool calls was ruled out on cost and latency.
 - **Analytics / swipe-history learning**. No telemetry pipeline.
 - **Persistence beyond saved dates.** Anything fancier than "remember the
   plans the user liked" is not in scope.
@@ -195,24 +309,44 @@ Listing these so they don't creep back in mid-build.
 ## External dependencies
 
 - Foursquare OS Places (AU subset), already downloaded as parquet.
-- Google Maps APIs: Places (existence, hours, rating, photos), Routes /
-  Distance Matrix (travel times, transport legs), and whatever is needed for
-  stable Maps URLs.
-- OpenRouter (or equivalent) for the planning LLM.
+- Google Maps APIs: Places (existence, hours, rating + review count,
+  review snippets, attributes, photos), Routes / Distance Matrix (travel
+  times, transport legs), and whatever is needed for stable Maps URLs.
+- OpenRouter (or equivalent) for both the curator LLM (cheap small
+  model) and the planner agents (capable tool-using model). Two different
+  model tiers, one provider.
+- An open embedding model run at index build time (e.g. `bge-small-en`
+  via sentence-transformers). No paid embedding API dependency at
+  runtime.
+- A vector index for nearest-neighbour lookup over the place embeddings
+  (FAISS, or a lightweight in-process alternative — at AU scale the
+  index fits comfortably in memory).
 - A weather API (TBD which provider).
-- A voice / phone agent platform for the restaurant booking call (TBD which
-  provider).
+- A voice / phone agent platform for the restaurant booking call (TBD
+  which provider).
 - Optional: a light web scraper for restaurant menus when Maps doesn't
   expose them.
 
 ## Failure modes worth stating up front
 
-- **No candidate places after filtering** → explicit empty state with a
-  suggestion (e.g. expand radius).
-- **Maps rejects too many candidates** → explicit empty state naming Maps as
-  the reason rather than returning a half-baked deck.
-- **LLM invents a venue** → plan rejected, not silently rewritten.
-- **Plan doesn't fit time window** → plan rejected, not silently trimmed.
+- **No candidate places after the deterministic cut** → explicit empty
+  state with a suggestion (e.g. expand radius).
+- **Embedding retrieval returns nothing useful** (tiny pool, weird vibe)
+  → widen K, and if that still fails, surface an explicit "no vibe
+  matches in this area" state.
+- **Curator LLM rejects everything** → surface that directly rather than
+  silently passing low-scored candidates through.
+- **Maps rejects too many candidates at enrichment** → explicit empty
+  state naming Maps as the reason rather than returning a half-baked
+  deck.
+- **Anchor selector can't find N diverse anchors** → generate fewer
+  cards, do not force-fit near-duplicates.
+- **Planner agent exceeds iteration cap or timeout** → that plan is
+  dropped and the failure is logged loudly. Other agents' plans still
+  return.
+- **Planner invents a venue** → plan rejected, not silently rewritten.
+- **Plan doesn't fit time window** → plan rejected, not silently
+  trimmed.
 - **Weather kills an outdoor plan** → plan rejected, reason surfaced.
-- **Booking agent fails (no answer, declined)** → surfaced explicitly in the
-  UI, date is still saved, user can retry or pick another plan.
+- **Booking agent fails (no answer, declined)** → surfaced explicitly in
+  the UI, date is still saved, user can retry or pick another plan.

@@ -42,3 +42,5 @@ Thumbs.db
 
 # Data
 data/
+datasets/
+!datasets/.gitkeep
