@@ -42,3 +42,6 @@ Thumbs.db
 
 # Data
 data/
+
+date-night-app/.expo/
+date-night-app/node_modules/
