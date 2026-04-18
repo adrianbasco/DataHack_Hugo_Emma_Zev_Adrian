@@ -1,4 +1,4 @@
-import { View, Text } from "react-native";
+import { View, Pressable, Text, StyleSheet } from "react-native";
 import { useRouter } from "expo-router";
 import InputForm from "../components/InputForm";
 import { GenerateRequest } from "../lib/types";
@@ -16,9 +16,29 @@ export default function HomeScreen() {
   }
 
   return (
-    <View style={{ flex: 1 }}>
-      <Text style={{ fontSize: 24, fontWeight: "600", padding: 16 }}>Plan a date night</Text>
+    <View style={styles.container}>
       <InputForm onSubmit={handleSubmit} />
+
+      <Pressable style={styles.savedLink} onPress={() => router.push("/saved")}>
+        <Text style={styles.savedLinkText}>View Saved Dates</Text>
+      </Pressable>
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: "#fff7f8",
+  },
+  savedLink: {
+    marginHorizontal: 20,
+    marginBottom: 20,
+    paddingVertical: 12,
+  },
+  savedLinkText: {
+    textAlign: "center",
+    color: "#be185d",
+    fontWeight: "600",
+  },
+});
