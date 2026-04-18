@@ -145,10 +145,14 @@ def merge_filtered_shards(
     tmp_path = output_path.with_suffix(f"{output_path.suffix}.tmp")
     tmp_path.unlink(missing_ok=True)
 
+    # Foursquare's shards are not schema-consistent: most encode `geom` as BLOB
+    # (raw WKB), but some encode it as GEOMETRY('OGC:CRS84'). DuckDB cannot
+    # cast between those types across files in a single read, so we drop
+    # `geom` from the merged output (lat/lon columns are preserved).
     con.execute(
         f"""
         COPY (
-            SELECT *
+            SELECT * EXCLUDE (geom)
             FROM read_parquet('{shard_glob}', union_by_name = true)
         ) TO '{tmp_path.as_posix()}' (FORMAT PARQUET, COMPRESSION ZSTD)
         """
