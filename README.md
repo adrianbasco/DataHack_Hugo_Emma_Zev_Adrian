@@ -22,6 +22,7 @@ Optional, depending on how you want to run it:
 - **Android Studio** with an emulator, if you want to test on an Android emulator
 
 ---
+<!-- .\venv\Scripts\Activate.ps1 -->
 
 ## 1. Open the frontend folder
 
