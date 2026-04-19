@@ -1,6 +1,5 @@
 import {
   GenerateChatRequest,
-  GenerateFormRequest,
   Plan,
   PlanStop,
   TimeOfDay,
@@ -51,33 +50,6 @@ export type SearchResultContract = {
   matchReasons: string[];
   card: Record<string, unknown>;
 };
-
-export function buildSearchPayloadFromForm(
-  request: GenerateFormRequest,
-  now: Date = new Date()
-): SearchRequestPayload {
-  const templateHints = deriveTemplateHints(request);
-  const query = compactQueryParts([
-    request.vibes.join(" "),
-    request.selectedTemplateTitle,
-    ...templateHints,
-    request.notes,
-    request.dietaryConstraints,
-    request.accessibilityConstraints,
-  ]);
-
-  return finalizeSearchPayload({
-    query,
-    limit: request.desiredIdeaCount,
-    now,
-    overrides: {
-      vibes: normalizeStringList(request.vibes),
-      time_of_day: normalizeTimeOfDay(request.timeWindow),
-      location: buildLocationOverride(request.location, request.radiusKm),
-      template_hints: templateHints,
-    },
-  });
-}
 
 export function buildSearchPayloadFromChat(
   request: GenerateChatRequest,
@@ -208,9 +180,7 @@ function buildLocationOverride(location?: string, radiusKm?: number) {
 }
 
 function deriveTemplateHints(
-  request:
-    | Pick<GenerateFormRequest, "selectedTemplateTitle" | "selectedTemplateStopTypes">
-    | Pick<GenerateChatRequest, "selectedTemplateTitle" | "selectedTemplateStopTypes">
+  request: Pick<GenerateChatRequest, "selectedTemplateTitle" | "selectedTemplateStopTypes">
 ) {
   return dedupeStrings([
     ...(request.selectedTemplateTitle ? [request.selectedTemplateTitle] : []),

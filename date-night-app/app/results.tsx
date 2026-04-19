@@ -9,29 +9,33 @@ import {
   SurfaceCard,
   palette,
 } from "../components/ui";
-import { searchPlansFromChat, searchPlansFromForm } from "../lib/api";
+import { searchPlansFromChat } from "../lib/api";
 import { cacheGeneratedPlans, savePlan } from "../lib/storage";
 import {
   GenerateChatRequest,
-  GenerateFormRequest,
-  PlannerMode,
   Plan,
+  PlannerMessage,
 } from "../lib/types";
 
 export default function ResultsScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ mode?: string; request?: string }>();
+  const params = useLocalSearchParams<{ request?: string }>();
   const [plans, setPlans] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);
   const [warning, setWarning] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
 
-  const mode: PlannerMode = params.mode === "chat" ? "chat" : "form";
   const parsedRequest = useMemo(() => {
     if (!params.request) return null;
     try {
-      return JSON.parse(params.request as string) as GenerateFormRequest | GenerateChatRequest;
-    } catch {
+      const parsed = JSON.parse(params.request as string);
+      if (!isGenerateChatRequest(parsed)) {
+        console.error("Planner results received a non-chat request payload.", parsed);
+        return null;
+      }
+      return parsed;
+    } catch (parseError) {
+      console.error("Planner request route param could not be parsed.", parseError);
       return null;
     }
   }, [params.request]);
@@ -51,18 +55,12 @@ export default function ResultsScreen() {
       setWarning(undefined);
 
       try {
-        const result =
-          mode === "chat"
-            ? await searchPlansFromChat(parsedRequest as GenerateChatRequest)
-            : await searchPlansFromForm(parsedRequest as GenerateFormRequest);
+        const result = await searchPlansFromChat(parsedRequest);
 
         if (!active) return;
 
         setPlans(result.data);
-        setWarning(result.warning);
-        if (result.warning) {
-          console.error("Planner search returned non-fatal warnings.", result.warning);
-        }
+        setWarning(result.data.length === 0 ? result.warning : undefined);
         try {
           await cacheGeneratedPlans(result.data);
         } catch (storageError) {
@@ -86,7 +84,7 @@ export default function ResultsScreen() {
     return () => {
       active = false;
     };
-  }, [mode, parsedRequest]);
+  }, [parsedRequest]);
 
   if (loading) {
     return (
@@ -163,6 +161,37 @@ export default function ResultsScreen() {
         onFinished={() => router.replace("/saved")}
       />
     </ScreenShell>
+  );
+}
+
+function isGenerateChatRequest(value: unknown): value is GenerateChatRequest {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  const request = value as Partial<GenerateChatRequest>;
+  return (
+    typeof request.prompt === "string" &&
+    request.prompt.trim().length > 0 &&
+    Array.isArray(request.transcript) &&
+    request.transcript.every(isPlannerMessage) &&
+    typeof request.partySize === "number" &&
+    Number.isFinite(request.partySize) &&
+    typeof request.desiredIdeaCount === "number" &&
+    Number.isFinite(request.desiredIdeaCount)
+  );
+}
+
+function isPlannerMessage(value: unknown): value is PlannerMessage {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  const message = value as Partial<PlannerMessage>;
+  return (
+    typeof message.id === "string" &&
+    (message.role === "assistant" || message.role === "user") &&
+    typeof message.content === "string"
   );
 }
 

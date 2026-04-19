@@ -47,7 +47,6 @@ try {
   });
   await page.getByText("Plan your perfect date.").waitFor({ timeout: 30_000 });
 
-  await page.getByText("Chat with AI").click();
   await page.getByPlaceholder("Describe the date you want.").fill(query);
 
   const searchResponsePromise = page.waitForResponse(

@@ -3,47 +3,9 @@ import test from "node:test";
 
 import {
   buildSearchPayloadFromChat,
-  buildSearchPayloadFromForm,
   mapSearchResponseToPlans,
   type SearchResponseContract,
 } from "./searchFlow";
-
-test("buildSearchPayloadFromForm maps structured fields into cached search overrides", () => {
-  const payload = buildSearchPayloadFromForm(
-    {
-      location: "Surry Hills, NSW",
-      vibes: ["romantic", "foodie"],
-      radiusKm: 6,
-      budget: "$$",
-      transportMode: "walking",
-      partySize: 2,
-      timeWindow: "evening",
-      desiredIdeaCount: 5,
-      dietaryConstraints: "vegetarian",
-      accessibilityConstraints: "low walking",
-      notes: "quiet atmosphere",
-      selectedTemplateId: "drinks_dinner_dessert",
-      selectedTemplateTitle: "Drinks, Dinner, Dessert",
-      selectedTemplateStopTypes: ["cocktail_bar", "restaurant", "dessert_shop"],
-      selectedTemplateDurationHours: 3.5,
-    },
-    new Date("2026-04-19T18:00:00.000Z")
-  );
-
-  assert.equal(payload.context.limit, 5);
-  assert.equal(payload.context.now_iso, "2026-04-19T18:00:00.000Z");
-  assert.equal(payload.overrides?.time_of_day, "evening");
-  assert.deepEqual(payload.overrides?.vibes, ["romantic", "foodie"]);
-  assert.deepEqual(payload.overrides?.location, {
-    text: "Surry Hills, NSW",
-    radius_km: 6,
-  });
-  assert.equal(payload.overrides?.transport_mode, undefined);
-  assert.ok(payload.overrides?.template_hints?.includes("Drinks, Dinner, Dessert"));
-  assert.ok(payload.overrides?.template_hints?.includes("cocktail bar"));
-  assert.match(payload.query ?? "", /quiet atmosphere/);
-  assert.match(payload.query ?? "", /vegetarian/);
-});
 
 test("buildSearchPayloadFromChat keeps the natural-language prompt as cached search query", () => {
   const payload = buildSearchPayloadFromChat(

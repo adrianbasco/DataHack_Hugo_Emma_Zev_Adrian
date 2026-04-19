@@ -133,7 +133,6 @@ export default function TemplatesScreen() {
                   params: {
                     templateId: template.id,
                     template: JSON.stringify(template),
-                    mode: "form",
                   },
                 })
               }

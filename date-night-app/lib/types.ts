@@ -1,6 +1,5 @@
 export type TransportMode = "walking" | "public_transport" | "driving";
 export type Budget = "$" | "$$" | "$$$" | "$$$$";
-export type PlannerMode = "form" | "chat";
 export type Vibe =
   | "romantic"
   | "foodie"
@@ -21,24 +20,6 @@ export type PlannerMessage = {
   id: string;
   role: "assistant" | "user";
   content: string;
-};
-
-export type GenerateFormRequest = {
-  location: string;
-  vibes: Vibe[];
-  radiusKm: number;
-  budget?: Budget | "";
-  transportMode?: TransportMode;
-  partySize: number;
-  timeWindow?: string;
-  desiredIdeaCount: number;
-  dietaryConstraints?: string;
-  accessibilityConstraints?: string;
-  notes?: string;
-  selectedTemplateId?: string;
-  selectedTemplateTitle?: string;
-  selectedTemplateStopTypes?: string[];
-  selectedTemplateDurationHours?: number;
 };
 
 export type GenerateChatRequest = {

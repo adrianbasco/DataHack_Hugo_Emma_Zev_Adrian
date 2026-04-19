@@ -11,14 +11,12 @@ import {
 } from "./contracts";
 import {
   buildSearchPayloadFromChat,
-  buildSearchPayloadFromForm,
   mapSearchResponseToPlans,
 } from "./searchFlow";
 import {
   DataResult,
   DateTemplate,
   GenerateChatRequest,
-  GenerateFormRequest,
   Plan,
   RestaurantBookingJob,
   RestaurantBookingPreview,
@@ -52,23 +50,6 @@ export async function fetchTemplates(): Promise<DataResult<DateTemplate[]>> {
   return {
     data: parseTemplatesResponse(payload),
     source: "api",
-  };
-}
-
-export async function searchPlansFromForm(
-  request: GenerateFormRequest
-): Promise<DataResult<Plan[]>> {
-  const payload = await requestJson(ENDPOINTS.plansSearch, {
-    method: "POST",
-    body: JSON.stringify(buildSearchPayloadFromForm(request)),
-  });
-  const response = mapSearchResponseToPlans(parseSearchResponse(payload), {
-    requestPartySize: request.partySize,
-  });
-  return {
-    data: response.plans,
-    source: "api",
-    warning: response.warning,
   };
 }
 
