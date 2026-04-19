@@ -12,6 +12,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
+from fastapi.middleware.cors import CORSMiddleware
+
 from back_end.api.models import (
     BlandCallDescriptionPayload,
     ClientErrorPayload,
@@ -57,6 +59,13 @@ def create_app(
     booking_factory = booking_service_factory or BookingService
 
     app = FastAPI(title="Date Night Frontend API")
+    app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # ok for dev
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
     app.mount(
         "/static/precache-images",
         StaticFiles(directory=plan_service.assets_dir, check_dir=False),

@@ -688,7 +688,7 @@ def _estimate_stop_times(*, plan_time_iso: str | None, stop_count: int) -> list[
     parsed = pd.Timestamp(plan_time_iso)
     out = []
     for index in range(stop_count):
-        out.append((parsed + pd.Timedelta(minutes=index * 75)).strftime("%-I:%M %p"))
+        out.append((parsed + pd.Timedelta(minutes=index * 75)).strftime("%I:%M %p").lstrip("0"))
     return out
 
 
