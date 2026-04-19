@@ -15,6 +15,7 @@ pyarrow
 
 # Date Night filtering pipeline
 httpx
+numpy
 pandas
 pyyaml
 crawl4ai

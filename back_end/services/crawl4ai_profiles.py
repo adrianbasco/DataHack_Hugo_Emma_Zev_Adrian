@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -37,6 +39,16 @@ from back_end.services.website_profiles import (
 
 logger = logging.getLogger(__name__)
 
+NON_RETRYABLE_CRAWL4AI_ERROR_TYPES = frozenset(
+    {
+        "dns_not_resolved",
+        "anti_bot_blocked",
+        "crawl_timeout",
+        "crawl_watchdog_timeout",
+        "unsupported_content",
+    }
+)
+
 
 @dataclass(frozen=True)
 class Crawl4AIProfileSettings:
@@ -54,6 +66,9 @@ class Crawl4AIProfileSettings:
     rate_limit_max_retries: int = 1
     retry_failed_with_full_browser: bool = True
     retry_timeout_ms: int = 18000
+    crawl_watchdog_extra_seconds: float = 3.0
+    crawl_watchdog_max_seconds: float | None = 15.0
+    batch_progress_interval_seconds: float = 30.0
 
 
 @dataclass(frozen=True)
@@ -134,10 +149,12 @@ class Crawl4AIWebsiteProfileClient:
                 crawler,
                 requested_urls,
                 self._homepage_run_config,
+                batch_label="homepage",
             )
             homepage_results = await self._retry_failed_batch(
                 homepage_results,
                 run_config=self._retry_run_config,
+                batch_label="homepage-retry",
             )
             extra_urls_by_site: dict[str, list[str]] = {}
             unique_extra_urls: list[str] = []
@@ -161,10 +178,12 @@ class Crawl4AIWebsiteProfileClient:
                 crawler,
                 unique_extra_urls,
                 self._detail_run_config,
+                batch_label="detail",
             )
             extra_results = await self._retry_failed_batch(
                 extra_results,
                 run_config=self._retry_run_config,
+                batch_label="detail-retry",
             )
 
         results = []
@@ -195,10 +214,11 @@ class Crawl4AIWebsiteProfileClient:
                     if homepage_result is not None
                     else f"No homepage crawl result was recorded for {requested_url}."
                 )
-                logger.error(
-                    "Crawl4AI website enrichment failed for %s (%s): %s",
+                logger.debug(
+                    "Crawl4AI website enrichment failed for %s (%s): [%s] %s",
                     place_id,
                     requested_url,
+                    error_type,
                     error_message,
                 )
                 results.append(_error_result(place_id, error_type, error_message))
@@ -232,56 +252,155 @@ class Crawl4AIWebsiteProfileClient:
         crawler: AsyncWebCrawler,
         urls: list[str],
         config: CrawlerRunConfig,
+        *,
+        batch_label: str,
     ) -> dict[str, _Crawl4AIRequestResult]:
         if not urls:
             return {}
 
-        results = await crawler.arun_many(
-            urls=urls,
-            config=config,
-            dispatcher=self._make_dispatcher(),
+        dispatcher = self._make_dispatcher()
+        semaphore = asyncio.Semaphore(dispatcher.semaphore_count)
+        started_at = time.perf_counter()
+        logger.info(
+            "Starting Crawl4AI %s batch for %d URLs with concurrency=%d, page_timeout_ms=%s, watchdog_seconds=%.1f.",
+            batch_label,
+            len(urls),
+            dispatcher.semaphore_count,
+            getattr(config, "page_timeout", None),
+            self._crawl_watchdog_seconds(config),
         )
-        by_requested_url: dict[str, _Crawl4AIRequestResult] = {}
-        for requested_url, result in zip(urls, results):
-            if not result.success:
-                by_requested_url[requested_url] = _Crawl4AIRequestResult(
-                    requested_url=requested_url,
-                    page=None,
-                    error_type="WebsiteContentError",
-                    error_message=(
-                        f"Crawl4AI failed for {requested_url}: "
-                        f"{getattr(result, 'error_message', '')}"
-                    ),
+        tasks = {
+            asyncio.create_task(
+                self._crawl_one_url(
+                    crawler,
+                    requested_url=url,
+                    config=config,
+                    semaphore=semaphore,
+                    rate_limiter=dispatcher.rate_limiter,
+                    batch_label=batch_label,
                 )
-                continue
-
-            text = _crawl_result_text(result)
-            if not text:
-                by_requested_url[requested_url] = _Crawl4AIRequestResult(
-                    requested_url=requested_url,
-                    page=None,
-                    error_type="WebsiteContentError",
-                    error_message=(
-                        f"Crawl4AI produced no usable markdown for {requested_url}."
-                    ),
-                )
-                continue
-
-            by_requested_url[requested_url] = _Crawl4AIRequestResult(
-                requested_url=requested_url,
-                page=_Crawl4AIPage(
-                    url=str(getattr(result, "url", requested_url)),
-                    text=text,
-                    links=_crawl_result_internal_links(result),
-                ),
             )
+            for url in urls
+        }
+        by_requested_url: dict[str, _Crawl4AIRequestResult] = {}
+        last_progress_log_at = started_at
+        while tasks:
+            done, tasks = await asyncio.wait(
+                tasks,
+                timeout=self._settings.batch_progress_interval_seconds,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                logger.warning(
+                    "Crawl4AI %s batch has not completed a URL for %.1fs (%d/%d done, %d pending).",
+                    batch_label,
+                    time.perf_counter() - last_progress_log_at,
+                    len(by_requested_url),
+                    len(urls),
+                    len(tasks),
+                )
+                last_progress_log_at = time.perf_counter()
+                continue
+
+            for task in done:
+                requested_url, request_result = task.result()
+                by_requested_url[requested_url] = request_result
+
+            now = time.perf_counter()
+            if (
+                not tasks
+                or len(by_requested_url) % max(dispatcher.semaphore_count, 1) == 0
+                or now - last_progress_log_at >= self._settings.batch_progress_interval_seconds
+            ):
+                logger.info(
+                    "Crawl4AI %s batch progress: %d/%d URLs done in %.1fs. Statuses: %s",
+                    batch_label,
+                    len(by_requested_url),
+                    len(urls),
+                    now - started_at,
+                    _crawl_request_status_summary(by_requested_url.values()),
+                )
+                last_progress_log_at = now
+        logger.info(
+            "Completed Crawl4AI %s batch for %d URLs in %.1fs. Statuses: %s",
+            batch_label,
+            len(urls),
+            time.perf_counter() - started_at,
+            _crawl_request_status_summary(by_requested_url.values()),
+        )
         return by_requested_url
+
+    async def _crawl_one_url(
+        self,
+        crawler: AsyncWebCrawler,
+        *,
+        requested_url: str,
+        config: CrawlerRunConfig,
+        semaphore: asyncio.Semaphore,
+        rate_limiter: RateLimiter | None,
+        batch_label: str,
+    ) -> tuple[str, _Crawl4AIRequestResult]:
+        try:
+            if rate_limiter is not None:
+                await rate_limiter.wait_if_needed(requested_url)
+            async with semaphore:
+                crawl_task = asyncio.create_task(
+                    crawler.arun(
+                        requested_url,
+                        config=config,
+                        session_id=f"crawl4ai-{uuid.uuid4()}",
+                    )
+                )
+                done, _ = await asyncio.wait(
+                    {crawl_task},
+                    timeout=self._crawl_watchdog_seconds(config),
+                )
+                if not done:
+                    crawl_task.cancel()
+                    crawl_task.add_done_callback(
+                        lambda abandoned: _consume_abandoned_crawl_task(
+                            abandoned,
+                            requested_url=requested_url,
+                        )
+                    )
+                    error_message = (
+                        f"Crawl4AI {batch_label} crawl exceeded watchdog of "
+                        f"{self._crawl_watchdog_seconds(config):.1f}s for {requested_url}."
+                    )
+                    logger.error(error_message)
+                    return requested_url, _Crawl4AIRequestResult(
+                        requested_url=requested_url,
+                        page=None,
+                        error_type="crawl_watchdog_timeout",
+                        error_message=error_message,
+                    )
+                result = crawl_task.result()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "Crawl4AI %s crawl raised unexpectedly for %s.",
+                batch_label,
+                requested_url,
+            )
+            return requested_url, _Crawl4AIRequestResult(
+                requested_url=requested_url,
+                page=None,
+                error_type=exc.__class__.__name__,
+                error_message=str(exc),
+            )
+
+        return requested_url, _crawl_request_result_from_crawl_result(
+            requested_url,
+            result,
+        )
 
     async def _retry_failed_batch(
         self,
         results_by_url: dict[str, _Crawl4AIRequestResult],
         *,
         run_config: CrawlerRunConfig,
+        batch_label: str,
     ) -> dict[str, _Crawl4AIRequestResult]:
         if not self._settings.retry_failed_with_full_browser:
             return results_by_url
@@ -290,6 +409,7 @@ class Crawl4AIWebsiteProfileClient:
             requested_url
             for requested_url, result in results_by_url.items()
             if result.page is None
+            and result.error_type not in NON_RETRYABLE_CRAWL4AI_ERROR_TYPES
         ]
         if not failed_urls:
             return results_by_url
@@ -299,6 +419,7 @@ class Crawl4AIWebsiteProfileClient:
                 retry_crawler,
                 failed_urls,
                 run_config,
+                batch_label=batch_label,
             )
 
         merged = dict(results_by_url)
@@ -322,6 +443,84 @@ class Crawl4AIWebsiteProfileClient:
             ),
         )
 
+    def _crawl_watchdog_seconds(self, config: CrawlerRunConfig) -> float:
+        page_timeout_ms = getattr(config, "page_timeout", None) or 0
+        page_timeout_seconds = max(float(page_timeout_ms) / 1000.0, 0.0)
+        watchdog_seconds = max(
+            1.0,
+            page_timeout_seconds + self._settings.crawl_watchdog_extra_seconds,
+        )
+        if self._settings.crawl_watchdog_max_seconds is not None:
+            watchdog_seconds = min(
+                watchdog_seconds,
+                self._settings.crawl_watchdog_max_seconds,
+            )
+        return max(1.0, watchdog_seconds)
+
+
+def _crawl_request_result_from_crawl_result(
+    requested_url: str,
+    result: object,
+) -> _Crawl4AIRequestResult:
+    if not getattr(result, "success", False):
+        error_type, error_message = _classify_crawl4ai_failure(
+            requested_url,
+            result,
+        )
+        return _Crawl4AIRequestResult(
+            requested_url=requested_url,
+            page=None,
+            error_type=error_type,
+            error_message=error_message,
+        )
+
+    text = _crawl_result_text(result)
+    if not text:
+        return _Crawl4AIRequestResult(
+            requested_url=requested_url,
+            page=None,
+            error_type="WebsiteContentError",
+            error_message=f"Crawl4AI produced no usable markdown for {requested_url}.",
+        )
+
+    return _Crawl4AIRequestResult(
+        requested_url=requested_url,
+        page=_Crawl4AIPage(
+            url=str(getattr(result, "url", requested_url)),
+            text=text,
+            links=_crawl_result_internal_links(result),
+        ),
+    )
+
+
+def _crawl_request_status_summary(results: object) -> str:
+    counts: dict[str, int] = {}
+    for result in results:
+        status = "ok" if result.page is not None else str(result.error_type or "unknown_error")
+        counts[status] = counts.get(status, 0) + 1
+    if not counts:
+        return "none"
+    return ", ".join(
+        f"{status}={count}"
+        for status, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    )
+
+
+def _consume_abandoned_crawl_task(
+    task: asyncio.Task[object],
+    *,
+    requested_url: str,
+) -> None:
+    if task.cancelled():
+        return
+    try:
+        task.result()
+    except Exception:
+        logger.exception(
+            "Abandoned Crawl4AI task for %s raised after watchdog cancellation.",
+            requested_url,
+        )
+
 
 def _crawl_result_text(result: object) -> str:
     markdown = getattr(result, "markdown", None)
@@ -341,6 +540,55 @@ def _crawl_result_text(result: object) -> str:
     if body:
         parts.append(str(body))
     return "\n".join(part for part in parts if part).strip()
+
+
+def _classify_crawl4ai_failure(
+    requested_url: str,
+    result: object,
+) -> tuple[str, str]:
+    raw_error = str(getattr(result, "error_message", "") or "").strip()
+    status_code = getattr(result, "status_code", None)
+    lowered = raw_error.casefold()
+    concise_error = _concise_crawl4ai_error(raw_error)
+
+    if "err_name_not_resolved" in lowered:
+        return "dns_not_resolved", f"DNS did not resolve for {requested_url}."
+    if "blocked by anti-bot protection" in lowered:
+        return "anti_bot_blocked", concise_error
+    if "unsupported content-type" in lowered:
+        return "unsupported_content", concise_error
+    if status_code:
+        return "http_error", f"HTTP {status_code} while crawling {requested_url}."
+    if "timeout" in lowered:
+        return "crawl_timeout", concise_error
+    if "target page, context or browser has been closed" in lowered:
+        return "browser_target_closed", concise_error
+    if "failed on navigating acs-goto" in lowered or "page.goto" in lowered:
+        return "navigation_failed", concise_error
+    return "WebsiteContentError", concise_error or f"Crawl4AI failed for {requested_url}."
+
+
+def _concise_crawl4ai_error(raw_error: str) -> str:
+    if not raw_error:
+        return "Crawl4AI failed without an error message."
+    prefixes = (
+        "\nCode context:",
+        "\nCall log:",
+    )
+    concise = raw_error
+    for prefix in prefixes:
+        if prefix in concise:
+            concise = concise.split(prefix, 1)[0]
+    lines = [
+        _normalize_space(line)
+        for line in concise.splitlines()
+        if _normalize_space(line)
+    ]
+    if not lines:
+        return "Crawl4AI failed without a concise error message."
+    if len(lines) >= 2 and lines[0].startswith("Unexpected error"):
+        return lines[1][:300]
+    return " ".join(lines[:2])[:300]
 
 
 def _safe_normalize_website_url(url: object) -> str | None:

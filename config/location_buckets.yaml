@@ -1,0 +1,116 @@
+# Date Night pre-cache location buckets.
+#
+# These are explicit generation anchors, not user-facing boundaries. Dense
+# date areas get higher max counts and boosts; lower-density areas still get
+# baseline coverage.
+
+buckets:
+  - id: sydney_cbd
+    label: Sydney CBD
+    latitude: -33.8688
+    longitude: 151.2093
+    radius_km: 2.5
+    transport_mode: walking
+    minimum_plan_count: 8
+    maximum_plan_count: 35
+    strategic_boost: 6
+    tags: [origin, destination, dense]
+
+  - id: darling_harbour_barangaroo
+    label: Darling Harbour and Barangaroo
+    latitude: -33.8666
+    longitude: 151.2017
+    radius_km: 2.0
+    transport_mode: walking
+    minimum_plan_count: 8
+    maximum_plan_count: 35
+    strategic_boost: 7
+    tags: [destination, waterfront, dense]
+
+  - id: surry_hills_darlinghurst
+    label: Surry Hills and Darlinghurst
+    latitude: -33.8840
+    longitude: 151.2130
+    radius_km: 2.2
+    transport_mode: walking
+    minimum_plan_count: 8
+    maximum_plan_count: 35
+    strategic_boost: 7
+    tags: [origin, destination, dense, nightlife]
+
+  - id: potts_point_kings_cross
+    label: Potts Point and Kings Cross
+    latitude: -33.8727
+    longitude: 151.2258
+    radius_km: 1.8
+    transport_mode: walking
+    minimum_plan_count: 6
+    maximum_plan_count: 28
+    strategic_boost: 5
+    tags: [destination, dining, nightlife]
+
+  - id: newtown_enmore
+    label: Newtown and Enmore
+    latitude: -33.8983
+    longitude: 151.1770
+    radius_km: 2.2
+    transport_mode: walking
+    minimum_plan_count: 8
+    maximum_plan_count: 32
+    strategic_boost: 6
+    tags: [origin, destination, nightlife, casual]
+
+  - id: marrickville
+    label: Marrickville
+    latitude: -33.9106
+    longitude: 151.1550
+    radius_km: 2.5
+    transport_mode: walking
+    minimum_plan_count: 5
+    maximum_plan_count: 24
+    strategic_boost: 4
+    tags: [origin, breweries, casual]
+
+  - id: bondi
+    label: Bondi
+    latitude: -33.8915
+    longitude: 151.2767
+    radius_km: 2.5
+    transport_mode: walking
+    minimum_plan_count: 6
+    maximum_plan_count: 28
+    strategic_boost: 5
+    tags: [origin, destination, beach, outdoorsy]
+
+  - id: manly
+    label: Manly
+    latitude: -33.7969
+    longitude: 151.2860
+    radius_km: 2.5
+    transport_mode: walking
+    minimum_plan_count: 6
+    maximum_plan_count: 28
+    strategic_boost: 5
+    tags: [origin, destination, beach, ferry]
+
+  - id: chatswood
+    label: Chatswood
+    latitude: -33.7969
+    longitude: 151.1833
+    radius_km: 2.5
+    transport_mode: walking
+    minimum_plan_count: 4
+    maximum_plan_count: 20
+    strategic_boost: 2
+    tags: [origin, dining]
+
+  - id: parramatta
+    label: Parramatta
+    latitude: -33.8150
+    longitude: 151.0011
+    radius_km: 3.0
+    transport_mode: walking
+    minimum_plan_count: 5
+    maximum_plan_count: 24
+    strategic_boost: 3
+    tags: [origin, dining, western_sydney]

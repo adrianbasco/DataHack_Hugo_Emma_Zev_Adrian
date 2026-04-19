@@ -36,6 +36,20 @@ class DateTemplatesConfigTestCase(unittest.TestCase):
             self.assertNotIn("at home", description, template["id"])
             self.assertNotIn("happens at home", description, template["id"])
 
+    def test_templates_have_meaningful_variation_count(self) -> None:
+        for template in self.templates:
+            value = template.get("meaningful_variations")
+            self.assertIs(
+                type(value),
+                int,
+                f"{template['id']} must define an integer meaningful_variations value.",
+            )
+            self.assertGreater(
+                value,
+                0,
+                f"{template['id']} meaningful_variations must be positive.",
+            )
+
     def test_templates_do_not_repeat_the_same_stop_type_three_times(self) -> None:
         for template in self.templates:
             stop_types = [stop["type"] for stop in template["stops"]]

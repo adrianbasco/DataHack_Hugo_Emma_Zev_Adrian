@@ -33,7 +33,8 @@ vibes:
   # drinks_dinner_dessert, dinner_and_dessert_walk, pre_theatre_dinner_and_show,
   # dinner_and_a_movie, wine_bar_and_shared_plates, live_music_and_late_drinks,
   # cocktail_crawl, dinner_and_dancing, hike_and_picnic, beach_day_into_seafood,
-  # ferry_day_out, rainy_day_indoors, dessert_crawl.
+  # ferry_day_out, rainy_day_indoors, dessert_crawl, zoo_and_nearby_lunch,
+  # amusement_park_evening, fish_market_and_waterfront_walk.
   romantic:
     - "Dining and Drinking > Restaurant"
     - "Dining and Drinking > Cafe, Coffee, and Tea House"
@@ -42,9 +43,12 @@ vibes:
     - "Dining and Drinking > Bar"
     - "Retail > Bookstore"
     - "Retail > Food and Beverage Retail > Farmers Market"
+    - "Retail > Food and Beverage Retail > Fish Market"
     - "Arts and Entertainment > Art Gallery"
     - "Arts and Entertainment > Museum"
     - "Arts and Entertainment > Aquarium"
+    - "Arts and Entertainment > Zoo"
+    - "Arts and Entertainment > Amusement Park"
     - "Arts and Entertainment > Performing Arts Venue"
     - "Arts and Entertainment > Movie Theater"
     - "Arts and Entertainment > Dance Hall"
@@ -60,7 +64,7 @@ vibes:
   # Templates: bakery_market_meander, brunch_and_bookstore,
   # farmers_market_cook_at_home, rooftop_then_dinner, drinks_dinner_dessert,
   # dinner_and_dessert_walk, wine_bar_and_shared_plates, night_market_and_bar,
-  # beach_day_into_seafood, dessert_crawl.
+  # beach_day_into_seafood, dessert_crawl, fish_market_and_waterfront_walk.
   foodie:
     - "Dining and Drinking > Restaurant"
     - "Dining and Drinking > Bakery"
@@ -69,10 +73,11 @@ vibes:
     - "Dining and Drinking > Night Market"
     - "Retail > Bookstore"
     - "Retail > Food and Beverage Retail > Farmers Market"
+    - "Retail > Food and Beverage Retail > Fish Market"
 
   # Templates: rooftop_then_dinner, comedy_night, live_music_and_late_drinks,
   # cocktail_crawl, pub_crawl, dinner_and_dancing, night_market_and_bar,
-  # mini_golf_food_bar, bowling_burgers_beers.
+  # mini_golf_food_bar, bowling_burgers_beers, amusement_park_evening.
   nightlife:
     - "Dining and Drinking > Restaurant"
     - "Dining and Drinking > Bar"
@@ -84,11 +89,12 @@ vibes:
     - "Arts and Entertainment > Dance Hall"
     - "Arts and Entertainment > Mini Golf Course"
     - "Arts and Entertainment > Bowling Alley"
+    - "Arts and Entertainment > Amusement Park"
     - "Nightlife Spot"
 
   # Templates: brunch_and_bookstore, gallery_and_wine_bar, museum_coffee_bookstore,
   # aquarium_and_harbour, pre_theatre_dinner_and_show, arcade_date,
-  # escape_room_and_dinner, rainy_day_indoors.
+  # escape_room_and_dinner, rainy_day_indoors, zoo_and_nearby_lunch.
   nerdy:
     - "Dining and Drinking > Restaurant"
     - "Dining and Drinking > Cafe, Coffee, and Tea House"
@@ -98,6 +104,7 @@ vibes:
     - "Arts and Entertainment > Art Gallery"
     - "Arts and Entertainment > Museum"
     - "Arts and Entertainment > Aquarium"
+    - "Arts and Entertainment > Zoo"
     - "Arts and Entertainment > Performing Arts Venue"
     - "Arts and Entertainment > Arcade"
     - "Arts and Entertainment > Escape Room"
@@ -106,7 +113,8 @@ vibes:
 
   # Templates: morning_swim_and_breakfast, coastal_walk_and_lunch,
   # botanical_picnic, sunset_lookout_and_dinner, sunset_picnic, hike_and_picnic,
-  # bike_trail_and_brewery, beach_day_into_seafood, ferry_day_out.
+  # bike_trail_and_brewery, beach_day_into_seafood, ferry_day_out,
+  # zoo_and_nearby_lunch.
   outdoorsy:
     - "Dining and Drinking > Restaurant"
     - "Dining and Drinking > Cafe, Coffee, and Tea House"
@@ -114,6 +122,7 @@ vibes:
     - "Dining and Drinking > Dessert Shop"
     - "Dining and Drinking > Brewery"
     - "Retail > Food and Beverage Retail > Farmers Market"
+    - "Arts and Entertainment > Zoo"
     - "Landmarks and Outdoors > Beach"
     - "Landmarks and Outdoors > Scenic Lookout"
     - "Landmarks and Outdoors > Boardwalk"
@@ -122,7 +131,8 @@ vibes:
     - "Landmarks and Outdoors > Bike Trail"
 
   # Templates: mini_golf_food_bar, bowling_burgers_beers, arcade_date,
-  # escape_room_and_dinner, hike_and_picnic, bike_trail_and_brewery.
+  # escape_room_and_dinner, hike_and_picnic, bike_trail_and_brewery,
+  # amusement_park_evening.
   active:
     - "Dining and Drinking > Restaurant"
     - "Dining and Drinking > Bakery"
@@ -133,6 +143,7 @@ vibes:
     - "Arts and Entertainment > Bowling Alley"
     - "Arts and Entertainment > Arcade"
     - "Arts and Entertainment > Escape Room"
+    - "Arts and Entertainment > Amusement Park"
     - "Landmarks and Outdoors > Hiking Trail"
     - "Landmarks and Outdoors > Bike Trail"
 
@@ -142,7 +153,8 @@ vibes:
   # dinner_and_dessert_walk, dinner_and_a_movie, comedy_night, pub_crawl,
   # night_market_and_bar, mini_golf_food_bar, bowling_burgers_beers, arcade_date,
   # escape_room_and_dinner, bike_trail_and_brewery, ferry_day_out,
-  # rainy_day_indoors, dessert_crawl.
+  # rainy_day_indoors, dessert_crawl, zoo_and_nearby_lunch,
+  # amusement_park_evening, fish_market_and_waterfront_walk.
   casual:
     - "Dining and Drinking > Restaurant"
     - "Dining and Drinking > Cafe, Coffee, and Tea House"
@@ -155,8 +167,11 @@ vibes:
     - "Dining and Drinking > Food Truck"
     - "Retail > Bookstore"
     - "Retail > Food and Beverage Retail > Farmers Market"
+    - "Retail > Food and Beverage Retail > Fish Market"
     - "Arts and Entertainment > Museum"
     - "Arts and Entertainment > Aquarium"
+    - "Arts and Entertainment > Zoo"
+    - "Arts and Entertainment > Amusement Park"
     - "Arts and Entertainment > Movie Theater"
     - "Arts and Entertainment > Comedy Club"
     - "Arts and Entertainment > Arcade"

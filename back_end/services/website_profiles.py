@@ -536,7 +536,10 @@ def _normalize_website_url(url: object) -> str | None:
         raise WebsiteContentError(f"Unsupported website scheme {parsed.scheme!r} for {text}.")
     if not parsed.netloc:
         raise WebsiteContentError(f"Website URL {text!r} is missing a hostname.")
-    cleaned = parsed._replace(fragment="")
+    path = parsed.path
+    if path in {"", "/"}:
+        path = ""
+    cleaned = parsed._replace(fragment="", path=path)
     return urlunparse(cleaned)
 
 
