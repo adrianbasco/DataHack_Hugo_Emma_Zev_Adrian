@@ -16,7 +16,7 @@ type Props = {
 
 const transportOptions: { label: string; value: TransportMode }[] = [
   { label: "Walk", value: "walking" },
-  { label: "Public transport", value: "public_transport" },
+  { label: "Transit", value: "public_transport" },
   { label: "Drive", value: "driving" },
 ];
 
@@ -30,14 +30,7 @@ const vibeOptions: Vibe[] = [
   "casual",
 ];
 
-const timeWindows = [
-  "Morning",
-  "Midday",
-  "Afternoon",
-  "Evening",
-  "Night",
-  "Flexible",
-];
+const timeWindows = ["Morning", "Afternoon", "Evening", "Night", "Flexible"];
 
 export default function InputForm({ selectedTemplate, onSubmit }: Props) {
   const [location, setLocation] = useState("");
@@ -53,11 +46,10 @@ export default function InputForm({ selectedTemplate, onSubmit }: Props) {
   const [dietaryConstraints, setDietaryConstraints] = useState("");
   const [accessibilityConstraints, setAccessibilityConstraints] = useState("");
   const [notes, setNotes] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   useEffect(() => {
-    if (!selectedTemplate) {
-      return;
-    }
+    if (!selectedTemplate) return;
     setVibes(selectedTemplate.vibes);
     setTimeWindow(selectedTemplate.timeOfDay);
   }, [selectedTemplate?.id]);
@@ -89,24 +81,10 @@ export default function InputForm({ selectedTemplate, onSubmit }: Props) {
 
   return (
     <View style={styles.container}>
-      <View style={styles.heroWrap}>
-        <Eyebrow tone="warm">Structured planner</Eyebrow>
-        <Text style={styles.heroTitle}>Tell the planner exactly what to optimize for.</Text>
-        <Text style={styles.heroSubtitle}>
-          Use the form when you already know the city, mood, and practical constraints.
-        </Text>
-      </View>
-
-      {selectedTemplate ? (
-        <SurfaceCard style={styles.templateCard}>
-          <Text style={styles.templateLabel}>Template selected</Text>
-          <Text style={styles.templateTitle}>{selectedTemplate.title}</Text>
-          <Text style={styles.templateText}>{selectedTemplate.description}</Text>
-        </SurfaceCard>
-      ) : null}
-
       <SurfaceCard style={styles.card}>
-        <FormField label="Location" helper="Suburb, postcode, or city">
+
+        {/* ── Primary field: Location ── */}
+        <FormField label="Location" helper="City or suburb">
           <TextInput
             style={styles.input}
             value={location}
@@ -116,44 +94,8 @@ export default function InputForm({ selectedTemplate, onSubmit }: Props) {
           />
         </FormField>
 
-        <View style={styles.row}>
-          <FormField label="Travel radius" helper="Kilometres">
-            <TextInput
-              style={styles.input}
-              value={radiusKm}
-              onChangeText={setRadiusKm}
-              keyboardType="numeric"
-              placeholder="10"
-              placeholderTextColor={palette.textMuted}
-            />
-          </FormField>
-
-          <FormField label="Party size" helper="People">
-            <TextInput
-              style={styles.input}
-              value={partySize}
-              onChangeText={setPartySize}
-              keyboardType="numeric"
-              placeholder="2"
-              placeholderTextColor={palette.textMuted}
-            />
-          </FormField>
-        </View>
-
-        <FormField label="Transport" helper="How you plan to move">
-          <View style={styles.chipWrap}>
-            {transportOptions.map((option) => (
-              <SelectChip
-                key={option.value}
-                label={option.label}
-                selected={transportMode === option.value}
-                onPress={() => setTransportMode(option.value)}
-              />
-            ))}
-          </View>
-        </FormField>
-
-        <FormField label="Vibes" helper="Pick one or several">
+        {/* ── Primary field: Vibe ── */}
+        <FormField label="Vibe" helper="Pick one or several">
           <View style={styles.chipWrap}>
             {vibeOptions.map((vibe) => (
               <SelectChip
@@ -166,6 +108,7 @@ export default function InputForm({ selectedTemplate, onSubmit }: Props) {
           </View>
         </FormField>
 
+        {/* ── Primary fields: Budget + Time ── */}
         <View style={styles.row}>
           <FormField label="Budget" helper="Spend level">
             <View style={styles.chipWrap}>
@@ -180,7 +123,7 @@ export default function InputForm({ selectedTemplate, onSubmit }: Props) {
             </View>
           </FormField>
 
-          <FormField label="Time window" helper="Best fit">
+          <FormField label="Time" helper="Best window">
             <View style={styles.chipWrap}>
               {timeWindows.map((value) => (
                 <SelectChip
@@ -194,59 +137,98 @@ export default function InputForm({ selectedTemplate, onSubmit }: Props) {
           </FormField>
         </View>
 
-        <View style={styles.row}>
-          <FormField label="Idea count" helper="How many options">
-            <TextInput
-              style={styles.input}
-              value={desiredIdeaCount}
-              onChangeText={setDesiredIdeaCount}
-              keyboardType="numeric"
-              placeholder="4"
-              placeholderTextColor={palette.textMuted}
-            />
-          </FormField>
+        {/* ── Advanced toggle ── */}
+        <SelectChip
+          label={showAdvanced ? "Hide advanced options ▴" : "Advanced options ▾"}
+          onPress={() => setShowAdvanced((v) => !v)}
+          style={styles.advancedToggle}
+        />
 
-          <FormField label="Template mode" helper="Optional backend hint">
-            <View style={styles.templateHintBox}>
-              <Text style={styles.templateHintText}>
-                {selectedTemplate ? selectedTemplate.id : "No template selected"}
-              </Text>
+        {/* ── Advanced fields — only shown when expanded ── */}
+        {showAdvanced ? (
+          <View style={styles.advancedSection}>
+            <View style={styles.row}>
+              <FormField label="Travel radius" helper="Kilometres">
+                <TextInput
+                  style={styles.input}
+                  value={radiusKm}
+                  onChangeText={setRadiusKm}
+                  keyboardType="numeric"
+                  placeholder="10"
+                  placeholderTextColor={palette.textMuted}
+                />
+              </FormField>
+
+              <FormField label="Party size" helper="People">
+                <TextInput
+                  style={styles.input}
+                  value={partySize}
+                  onChangeText={setPartySize}
+                  keyboardType="numeric"
+                  placeholder="2"
+                  placeholderTextColor={palette.textMuted}
+                />
+              </FormField>
             </View>
-          </FormField>
-        </View>
 
-        <FormField label="Dietary constraints" helper="Optional">
-          <TextInput
-            style={styles.input}
-            value={dietaryConstraints}
-            onChangeText={setDietaryConstraints}
-            placeholder="Vegetarian, nut-free..."
-            placeholderTextColor={palette.textMuted}
-          />
-        </FormField>
+            <FormField label="Transport" helper="How you'll move">
+              <View style={styles.chipWrap}>
+                {transportOptions.map((option) => (
+                  <SelectChip
+                    key={option.value}
+                    label={option.label}
+                    selected={transportMode === option.value}
+                    onPress={() => setTransportMode(option.value)}
+                  />
+                ))}
+              </View>
+            </FormField>
 
-        <FormField label="Accessibility constraints" helper="Optional">
-          <TextInput
-            style={styles.input}
-            value={accessibilityConstraints}
-            onChangeText={setAccessibilityConstraints}
-            placeholder="Low walking, step-free access..."
-            placeholderTextColor={palette.textMuted}
-          />
-        </FormField>
+            <FormField label="Number of ideas" helper="How many options">
+              <TextInput
+                style={styles.input}
+                value={desiredIdeaCount}
+                onChangeText={setDesiredIdeaCount}
+                keyboardType="numeric"
+                placeholder="4"
+                placeholderTextColor={palette.textMuted}
+              />
+            </FormField>
 
-        <FormField label="Notes for the planner" helper="Optional extra context">
-          <TextInput
-            style={[styles.input, styles.notesInput]}
-            value={notes}
-            onChangeText={setNotes}
-            placeholder="Anniversary, want a surprise finish, avoid loud bars..."
-            placeholderTextColor={palette.textMuted}
-            multiline
-          />
-        </FormField>
+            <FormField label="Dietary constraints" helper="Optional">
+              <TextInput
+                style={styles.input}
+                value={dietaryConstraints}
+                onChangeText={setDietaryConstraints}
+                placeholder="Vegetarian, nut-free..."
+                placeholderTextColor={palette.textMuted}
+              />
+            </FormField>
 
-        <ActionButton label="Generate ideas from form" onPress={handleSubmit} />
+            <FormField label="Accessibility" helper="Optional">
+              <TextInput
+                style={styles.input}
+                value={accessibilityConstraints}
+                onChangeText={setAccessibilityConstraints}
+                placeholder="Low walking, step-free..."
+                placeholderTextColor={palette.textMuted}
+              />
+            </FormField>
+
+            <FormField label="Extra notes" helper="Optional">
+              <TextInput
+                style={[styles.input, styles.notesInput]}
+                value={notes}
+                onChangeText={setNotes}
+                placeholder="Anniversary, avoid loud bars..."
+                placeholderTextColor={palette.textMuted}
+                multiline
+              />
+            </FormField>
+          </View>
+        ) : null}
+
+        <ActionButton label="Generate ideas →" onPress={handleSubmit} />
       </SurfaceCard>
     </View>
   );
@@ -278,44 +260,10 @@ function capitalize(value: string) {
 
 const styles = StyleSheet.create({
   container: {
-    gap: 16,
-  },
-  heroWrap: {
-    gap: 10,
-  },
-  heroTitle: {
-    fontSize: 34,
-    lineHeight: 40,
-    fontWeight: "900",
-    color: palette.text,
-  },
-  heroSubtitle: {
-    color: palette.textMuted,
-    fontSize: 15,
-    lineHeight: 23,
-  },
-  templateCard: {
-    gap: 6,
-    backgroundColor: "rgba(255, 122, 89, 0.14)",
-  },
-  templateLabel: {
-    color: palette.accentWarm,
-    fontSize: 12,
-    fontWeight: "800",
-    letterSpacing: 0.6,
-    textTransform: "uppercase",
-  },
-  templateTitle: {
-    color: palette.text,
-    fontSize: 20,
-    fontWeight: "800",
-  },
-  templateText: {
-    color: palette.textSoft,
-    lineHeight: 21,
+    gap: 0,
   },
   card: {
-    gap: 16,
+    gap: 18,
   },
   row: {
     flexDirection: "row",
@@ -324,17 +272,16 @@ const styles = StyleSheet.create({
   },
   field: {
     flex: 1,
-    minWidth: 160,
+    minWidth: 140,
     gap: 8,
   },
   fieldHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    gap: 8,
   },
   label: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "700",
     color: palette.textSoft,
   },
@@ -346,32 +293,27 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: palette.border,
     backgroundColor: palette.panelSoft,
-    borderRadius: 18,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
     fontSize: 15,
     color: palette.text,
   },
   notesInput: {
-    minHeight: 96,
+    minHeight: 88,
     textAlignVertical: "top",
   },
   chipWrap: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
+    gap: 8,
   },
-  templateHintBox: {
-    minHeight: 48,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: palette.border,
-    backgroundColor: "rgba(255, 255, 255, 0.04)",
-    justifyContent: "center",
-    paddingHorizontal: 14,
+  // Advanced toggle — looks like a subtle chip
+  advancedToggle: {
+    alignSelf: "flex-start",
   },
-  templateHintText: {
-    color: palette.text,
-    fontWeight: "700",
+  advancedSection: {
+    gap: 18,
+    paddingTop: 4,
   },
 });

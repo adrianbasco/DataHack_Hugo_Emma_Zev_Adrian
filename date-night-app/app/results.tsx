@@ -29,10 +29,7 @@ export default function ResultsScreen() {
 
   const mode: PlannerMode = params.mode === "chat" ? "chat" : "form";
   const parsedRequest = useMemo(() => {
-    if (!params.request) {
-      return null;
-    }
-
+    if (!params.request) return null;
     try {
       return JSON.parse(params.request as string) as GenerateFormRequest | GenerateChatRequest;
     } catch {
@@ -59,188 +56,108 @@ export default function ResultsScreen() {
             ? await generatePlansFromChat(parsedRequest as GenerateChatRequest)
             : await generatePlansFromForm(parsedRequest as GenerateFormRequest);
 
-        if (!active) {
-          return;
-        }
+        if (!active) return;
 
         setPlans(result.data);
         setWarning(result.warning);
         await cacheGeneratedPlans(result.data);
       } catch (loadError) {
-        if (!active) {
-          return;
-        }
+        if (!active) return;
         setError(loadError instanceof Error ? loadError.message : "Failed to generate plans.");
       } finally {
-        if (active) {
-          setLoading(false);
-        }
+        if (active) setLoading(false);
       }
     }
 
     void loadPlans();
-
-    return () => {
-      active = false;
-    };
+    return () => { active = false; };
   }, [mode, parsedRequest]);
 
-  const summaryChips = buildSummaryChips(mode, parsedRequest);
-
-  return (
-    <ScreenShell contentContainerStyle={styles.container}>
-      <View style={styles.header}>
-        <Eyebrow>{mode === "chat" ? "Chat planner" : "Structured planner"}</Eyebrow>
-        <Text style={styles.title}>Generated date ideas</Text>
-        <Text style={styles.subtitle}>
-          These cards are ready for swipe-save, detail view, and booking handoff.
-        </Text>
-
-        <View style={styles.summaryWrap}>
-          {summaryChips.map((chip) => (
-            <SelectChip key={chip} label={chip} selected />
-          ))}
-        </View>
-
-        <View style={styles.headerActions}>
-          <ActionButton
-            label="Edit request"
-            variant="secondary"
-            onPress={() => router.back()}
-            style={styles.headerButton}
-          />
-          <ActionButton
-            label="Saved"
-            variant="secondary"
-            onPress={() => router.push("/saved")}
-            style={styles.headerButton}
-          />
-        </View>
-      </View>
-
-      {warning ? (
-        <SurfaceCard style={styles.bannerCard}>
-          <Text style={styles.bannerTitle}>Using local fallback data</Text>
-          <Text style={styles.bannerText}>{warning}</Text>
-        </SurfaceCard>
-      ) : null}
-
-      {loading ? (
+  // ── Loading state ──────────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <ScreenShell contentContainerStyle={styles.centered}>
         <SurfaceCard style={styles.centerCard}>
           <ActivityIndicator color={palette.accent} />
-          <Text style={styles.centerTitle}>Generating plans</Text>
+          <Text style={styles.centerTitle}>Finding your date ideas</Text>
           <Text style={styles.centerText}>
-            Pulling together template logic, constraints, and plan details.
+            Pulling together venues, timing, and plan details.
           </Text>
         </SurfaceCard>
-      ) : null}
+      </ScreenShell>
+    );
+  }
 
-      {!loading && error ? (
+  // ── Error state ────────────────────────────────────────────────────────────
+  if (error) {
+    return (
+      <ScreenShell contentContainerStyle={styles.centered}>
         <SurfaceCard style={styles.centerCard}>
-          <Text style={styles.centerTitle}>Planner request failed</Text>
+          <Text style={styles.centerTitle}>Couldn't generate ideas</Text>
           <Text style={styles.centerText}>{error}</Text>
           <ActionButton label="Go back" variant="secondary" onPress={() => router.back()} />
         </SurfaceCard>
-      ) : null}
+      </ScreenShell>
+    );
+  }
 
-      {!loading && !error && plans.length > 0 ? (
-        <SwipeDeck
-          plans={plans}
-          onSavePlan={async (plan) => {
-            await savePlan(plan);
-          }}
-          onOpenPlan={(plan) =>
-            router.push({
-              pathname: "/plan/[id]",
-              params: { id: plan.id },
-            })
-          }
-          onFinished={() => router.push("/saved")}
-        />
-      ) : null}
-
-      {!loading && !error && plans.length === 0 ? (
+  // ── Empty state ────────────────────────────────────────────────────────────
+  if (plans.length === 0) {
+    return (
+      <ScreenShell contentContainerStyle={styles.centered}>
         <SurfaceCard style={styles.centerCard}>
           <Text style={styles.centerTitle}>No plans returned</Text>
           <Text style={styles.centerText}>
-            Try loosening the constraints or switching to chat mode for a more open-ended brief.
+            Try loosening the constraints or switching to chat mode.
           </Text>
+          <ActionButton label="Go back" variant="secondary" onPress={() => router.back()} />
         </SurfaceCard>
-      ) : null}
+      </ScreenShell>
+    );
+  }
+
+  // ── Main swipe deck — NON-scrolling so buttons are always visible ──────────
+  return (
+    <ScreenShell contentContainerStyle={styles.container}>
+      {/* Minimal header — just a back button and count */}
+      <View style={styles.header}>
+        <ActionButton
+          label="← Edit"
+          variant="secondary"
+          onPress={() => router.back()}
+          style={styles.backButton}
+        />
+        {warning ? (
+          <Text style={styles.warningTag}>Demo data</Text>
+        ) : null}
+      </View>
+
+      {/* Deck takes ALL remaining space — save/skip always on screen */}
+      <SwipeDeck
+        plans={plans}
+        onSavePlan={async (plan) => { await savePlan(plan); }}
+        onOpenPlan={(plan) =>
+          router.push({
+            pathname: "/plan/[id]",
+            params: { id: plan.id },
+          })
+        }
+        onFinished={() => router.push("/saved")}
+      />
     </ScreenShell>
   );
 }
 
-function buildSummaryChips(
-  mode: PlannerMode,
-  request: GenerateFormRequest | GenerateChatRequest | null
-) {
-  if (!request) {
-    return [mode];
-  }
-
-  if (mode === "chat") {
-    const chatRequest = request as GenerateChatRequest;
-    return [
-      chatRequest.location || "Anywhere",
-      chatRequest.timeWindow || "Flexible",
-      chatRequest.budget || "Open budget",
-      `${chatRequest.desiredIdeaCount} ideas`,
-    ];
-  }
-
-  const formRequest = request as GenerateFormRequest;
-  return [
-    formRequest.location || "Anywhere",
-    ...(formRequest.vibes.slice(0, 2) || []),
-    formRequest.timeWindow || "Flexible",
-    `${formRequest.desiredIdeaCount} ideas`,
-  ];
-}
-
 const styles = StyleSheet.create({
+  // Non-scrolling container — flex:1 so deck fills screen
   container: {
     flex: 1,
-    gap: 16,
-  },
-  header: {
-    gap: 10,
-  },
-  title: {
-    color: palette.text,
-    fontSize: 34,
-    lineHeight: 40,
-    fontWeight: "900",
-  },
-  subtitle: {
-    color: palette.textMuted,
-    lineHeight: 22,
-    fontSize: 15,
-  },
-  summaryWrap: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-  },
-  headerActions: {
-    flexDirection: "row",
     gap: 12,
-    flexWrap: "wrap",
   },
-  headerButton: {
-    minWidth: 120,
-  },
-  bannerCard: {
-    gap: 6,
-  },
-  bannerTitle: {
-    color: palette.text,
-    fontSize: 18,
-    fontWeight: "800",
-  },
-  bannerText: {
-    color: palette.textMuted,
-    lineHeight: 21,
+  centered: {
+    flex: 1,
+    justifyContent: "center",
+    gap: 12,
   },
   centerCard: {
     gap: 10,
@@ -257,5 +174,30 @@ const styles = StyleSheet.create({
     color: palette.textMuted,
     textAlign: "center",
     lineHeight: 22,
+  },
+  // Compact header row
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  backButton: {
+    minHeight: 38,
+    paddingHorizontal: 14,
+  },
+  headerCount: {
+    flex: 1,
+    color: palette.text,
+    fontSize: 17,
+    fontWeight: "900",
+  },
+  warningTag: {
+    color: palette.textMuted,
+    fontSize: 12,
+    fontWeight: "700",
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
   },
 });

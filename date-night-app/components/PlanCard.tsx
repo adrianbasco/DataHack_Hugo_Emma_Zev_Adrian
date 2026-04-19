@@ -9,19 +9,29 @@ type Props = {
 };
 
 export default function PlanCard({ plan, onView, onSave }: Props) {
+  const stops = Array.isArray(plan?.stops) ? plan.stops : [];
+  const vibes = Array.isArray((plan as any)?.vibes) ? (plan as any).vibes : [];
+  const title = typeof plan?.title === "string" ? plan.title : "Untitled plan";
+  const hook = typeof plan?.hook === "string" ? plan.hook : "";
+  const heroImageUrl =
+    typeof plan?.heroImageUrl === "string" && plan.heroImageUrl.trim().length > 0
+      ? plan.heroImageUrl
+      : null;
+
   return (
     <SurfaceCard style={styles.card}>
-      {plan.heroImageUrl ? (
-        <Image source={{ uri: plan.heroImageUrl }} style={styles.image} />
+      {heroImageUrl ? (
+        <Image source={{ uri: heroImageUrl }} style={styles.image} />
       ) : null}
 
       <View style={styles.content}>
         <View style={styles.header}>
           <View style={styles.headerCopy}>
-            <Text style={styles.title}>{plan.title}</Text>
-            <Text style={styles.hook}>{plan.hook}</Text>
+            <Text style={styles.title}>{title}</Text>
+            {hook ? <Text style={styles.hook}>{hook}</Text> : null}
           </View>
-          {plan.costBand ? (
+
+          {plan?.costBand ? (
             <View style={styles.badge}>
               <Text style={styles.badgeText}>{plan.costBand}</Text>
             </View>
@@ -29,26 +39,32 @@ export default function PlanCard({ plan, onView, onSave }: Props) {
         </View>
 
         <View style={styles.metaWrap}>
-          {plan.templateHint ? <MetaPill label={plan.templateHint} /> : null}
-          {plan.durationLabel ? <MetaPill label={plan.durationLabel} /> : null}
-          {plan.weather ? <MetaPill label={plan.weather} tone="cool" /> : null}
-          {plan.mapsVerificationNeeded ? <MetaPill label="Check maps" tone="cool" /> : null}
+          {plan?.templateHint ? <MetaPill label={plan.templateHint} /> : null}
+          {plan?.durationLabel ? <MetaPill label={plan.durationLabel} /> : null}
+          {plan?.weather ? <MetaPill label={plan.weather} tone="cool" /> : null}
+          {plan?.mapsVerificationNeeded ? (
+            <MetaPill label="Check maps" tone="cool" />
+          ) : null}
         </View>
 
-        <View style={styles.vibesWrap}>
-          {plan.vibes.map((vibe) => (
-            <MetaPill key={vibe} label={vibe} />
-          ))}
-        </View>
+        {vibes.length > 0 ? (
+          <View style={styles.vibesWrap}>
+            {vibes.map((vibe: string, index: number) => (
+              <MetaPill key={`${vibe}-${index}`} label={vibe} />
+            ))}
+          </View>
+        ) : null}
 
-        <View style={styles.stops}>
-          {plan.stops.slice(0, 3).map((stop, index) => (
-            <View key={stop.id} style={styles.stopRow}>
-              <Text style={styles.stopIndex}>{index + 1}</Text>
-              <Text style={styles.stopText}>{stop.name}</Text>
-            </View>
-          ))}
-        </View>
+        {stops.length > 0 ? (
+          <View style={styles.stops}>
+            {stops.slice(0, 3).map((stop: any, index: number) => (
+              <View key={stop?.id ?? `${stop?.name ?? "stop"}-${index}`} style={styles.stopRow}>
+                <Text style={styles.stopIndex}>{index + 1}</Text>
+                <Text style={styles.stopText}>{stop?.name ?? "Unnamed stop"}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
 
         <View style={styles.actions}>
           <ActionButton
@@ -58,7 +74,11 @@ export default function PlanCard({ plan, onView, onSave }: Props) {
             style={styles.actionButton}
           />
           {onSave ? (
-            <ActionButton label="Save plan" onPress={onSave} style={styles.actionButton} />
+            <ActionButton
+              label="Save plan"
+              onPress={onSave}
+              style={styles.actionButton}
+            />
           ) : null}
         </View>
       </View>
@@ -75,7 +95,9 @@ function MetaPill({
 }) {
   return (
     <View style={[styles.metaPill, tone === "cool" && styles.metaPillCool]}>
-      <Text style={[styles.metaText, tone === "cool" && styles.metaTextCool]}>{label}</Text>
+      <Text style={[styles.metaText, tone === "cool" && styles.metaTextCool]}>
+        {label}
+      </Text>
     </View>
   );
 }

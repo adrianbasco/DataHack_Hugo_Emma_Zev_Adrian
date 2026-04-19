@@ -1,19 +1,21 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import {
   Animated,
-  Dimensions,
   Image,
   PanResponder,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from "react-native";
+
 import { Plan } from "../lib/types";
 import { ActionButton, SurfaceCard, palette } from "./ui";
 
-const SCREEN_WIDTH = Dimensions.get("window").width;
-const SWIPE_THRESHOLD = 120;
+const SWIPE_THRESHOLD = 110;
+const MAX_CARD_WIDTH = 420;
 
 type Props = {
   plans: Plan[];
@@ -28,15 +30,24 @@ export default function SwipeDeck({
   onOpenPlan,
   onFinished,
 }: Props) {
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+
   const [currentIndex, setCurrentIndex] = useState(0);
+  const currentIndexRef = useRef(0);
   const position = useRef(new Animated.ValueXY()).current;
+
+  currentIndexRef.current = currentIndex;
 
   const currentPlan = plans[currentIndex];
   const nextPlan = plans[currentIndex + 1];
 
+  const deckWidth = Math.min(Math.max(screenWidth - 24, 280), MAX_CARD_WIDTH);
+  const cardHeight = Math.min(Math.max(screenHeight * 0.68, 500), 700);
+  const imageHeight = Math.min(Math.max(cardHeight * 0.5, 220), 320);
+
   const rotate = position.x.interpolate({
-    inputRange: [-SCREEN_WIDTH, 0, SCREEN_WIDTH],
-    outputRange: ["-16deg", "0deg", "16deg"],
+    inputRange: [-deckWidth, 0, deckWidth],
+    outputRange: ["-14deg", "0deg", "14deg"],
     extrapolate: "clamp",
   });
 
@@ -52,62 +63,73 @@ export default function SwipeDeck({
     extrapolate: "clamp",
   });
 
-  const animatedCardStyle = useMemo(
-    () => ({
-      transform: [...position.getTranslateTransform(), { rotate }],
-    }),
-    [position, rotate]
-  );
-
-  function resetPosition() {
+  const resetPosition = useCallback(() => {
     Animated.spring(position, {
       toValue: { x: 0, y: 0 },
       useNativeDriver: false,
       friction: 5,
+      tension: 90,
     }).start();
-  }
+  }, [position]);
 
-  function goToNext(direction: "left" | "right") {
-    const swipedPlan = plans[currentIndex];
+  const goToNext = useCallback(
+  async (direction: "left" | "right") => {
+    const idx = currentIndexRef.current;
+    const swipedPlan = plans[idx];
 
     if (direction === "right" && swipedPlan) {
-      Promise.resolve(onSavePlan(swipedPlan)).catch((error: unknown) => {
-        console.error("Failed to save swiped plan.", error);
-      });
+      try {
+        await onSavePlan(swipedPlan);
+      } catch (err) {
+        console.error("Failed to save swiped plan.", err);
+      }
     }
 
     position.setValue({ x: 0, y: 0 });
 
-    const nextIndex = currentIndex + 1;
-    if (nextIndex >= plans.length) {
-      setCurrentIndex(nextIndex);
+    const next = idx + 1;
+    currentIndexRef.current = next;
+    setCurrentIndex(next);
+
+    if (next >= plans.length) {
       onFinished?.();
-      return;
     }
+  },
+  [onFinished, onSavePlan, plans, position]
+);
 
-    setCurrentIndex(nextIndex);
-  }
-
-  function forceSwipe(direction: "left" | "right") {
-    const x = direction === "right" ? SCREEN_WIDTH + 120 : -SCREEN_WIDTH - 120;
+  const forceSwipe = useCallback(
+  (direction: "left" | "right") => {
+    const x = direction === "right" ? deckWidth + 140 : -deckWidth - 140;
 
     Animated.timing(position, {
       toValue: { x, y: 0 },
       duration: 220,
       useNativeDriver: false,
     }).start(() => {
-      goToNext(direction);
+      void goToNext(direction);
     });
-  }
+  },
+  [deckWidth, goToNext, position]
+);
 
-  const panResponder = useRef(
+const panResponder = useMemo(
+  () =>
     PanResponder.create({
-      onMoveShouldSetPanResponder: (_evt, gestureState) =>
-        Math.abs(gestureState.dx) > 8 || Math.abs(gestureState.dy) > 8,
-      onPanResponderMove: (_evt, gestureState) => {
-        position.setValue({ x: gestureState.dx, y: gestureState.dy * 0.18 });
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_, gestureState) =>
+        Math.abs(gestureState.dx) > Math.abs(gestureState.dy) &&
+        Math.abs(gestureState.dx) > 6,
+      onMoveShouldSetPanResponderCapture: (_, gestureState) =>
+        Math.abs(gestureState.dx) > Math.abs(gestureState.dy) &&
+        Math.abs(gestureState.dx) > 6,
+      onPanResponderMove: (_, gestureState) => {
+        position.setValue({
+          x: gestureState.dx,
+          y: gestureState.dy * 0.18,
+        });
       },
-      onPanResponderRelease: (_evt, gestureState) => {
+      onPanResponderRelease: (_, gestureState) => {
         if (gestureState.dx > SWIPE_THRESHOLD) {
           forceSwipe("right");
         } else if (gestureState.dx < -SWIPE_THRESHOLD) {
@@ -116,96 +138,152 @@ export default function SwipeDeck({
           resetPosition();
         }
       },
-    })
-  ).current;
-
+      onPanResponderTerminate: resetPosition,
+      onPanResponderTerminationRequest: () => false,
+    }),
+  [forceSwipe, position, resetPosition]
+);
   if (!currentPlan) {
     return (
-      <SurfaceCard style={styles.emptyWrap}>
-        <Text style={styles.emptyTitle}>Deck complete</Text>
-        <Text style={styles.emptyText}>
-          You made it through the current plan set. Open saved dates to revisit the winners.
-        </Text>
-      </SurfaceCard>
+      <View style={styles.flex}>
+        <SurfaceCard style={styles.emptyWrap}>
+          <Text style={styles.emptyTitle}>All done!</Text>
+          <Text style={styles.emptyText}>
+            Open saved dates to revisit your picks.
+          </Text>
+        </SurfaceCard>
+      </View>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <View style={styles.deckArea}>
-        {nextPlan ? (
-          <View style={[styles.card, styles.nextCard]}>
-            {nextPlan.heroImageUrl ? (
-              <Image source={{ uri: nextPlan.heroImageUrl }} style={styles.image} />
-            ) : null}
-            <View style={styles.cardBody}>
-              <Text style={styles.kicker}>Up next</Text>
-              <Text style={styles.title}>{nextPlan.title}</Text>
-              <Text style={styles.subtitle}>{nextPlan.hook}</Text>
-            </View>
-          </View>
-        ) : null}
+    <View style={styles.flex}>
+      <View style={styles.container}>
+        <View style={[styles.deckArea, { width: deckWidth, minHeight: cardHeight }]}>
+          {nextPlan ? (
+            <View
+              style={[
+                styles.card,
+                styles.nextCard,
+                { width: deckWidth, minHeight: cardHeight },
+              ]}
+              pointerEvents="none"
+            >
+              {nextPlan.heroImageUrl ? (
+                <Image
+                  source={{ uri: nextPlan.heroImageUrl }}
+                  style={[styles.image, { height: imageHeight }]}
+                />
+              ) : (
+                <View
+                  style={[
+                    styles.image,
+                    styles.imagePlaceholder,
+                    { height: imageHeight },
+                  ]}
+                />
+              )}
 
-        <Animated.View
-          style={[styles.card, animatedCardStyle]}
-          {...panResponder.panHandlers}
-        >
-          <Pressable style={styles.cardPressable} onPress={() => onOpenPlan(currentPlan)}>
-            {currentPlan.heroImageUrl ? (
-              <Image source={{ uri: currentPlan.heroImageUrl }} style={styles.image} />
-            ) : null}
-
-            <Animated.View style={[styles.likeBadge, { opacity: likeOpacity }]}>
-              <Text style={styles.likeBadgeText}>SAVE</Text>
-            </Animated.View>
-
-            <Animated.View style={[styles.nopeBadge, { opacity: nopeOpacity }]}>
-              <Text style={styles.nopeBadgeText}>SKIP</Text>
-            </Animated.View>
-
-            <View style={styles.cardBody}>
-              <Text style={styles.kicker}>
-                {currentPlan.templateHint || "Planner suggestion"}
-              </Text>
-              <Text style={styles.title}>{currentPlan.title}</Text>
-              <Text style={styles.subtitle}>{currentPlan.hook}</Text>
-
-              <View style={styles.metaRow}>
-                {currentPlan.durationLabel ? <MetaPill label={currentPlan.durationLabel} /> : null}
-                {currentPlan.costBand ? <MetaPill label={currentPlan.costBand} /> : null}
-                {currentPlan.weather ? <MetaPill label={currentPlan.weather} tone="cool" /> : null}
-                {currentPlan.mapsVerificationNeeded ? (
-                  <MetaPill label="Check maps" tone="cool" />
-                ) : null}
+              <View style={styles.cardBody}>
+                <Text style={styles.kicker}>Up next</Text>
+                <Text style={styles.title} numberOfLines={1}>
+                  {nextPlan.title}
+                </Text>
               </View>
-
-              <View style={styles.stopList}>
-                {currentPlan.stops.slice(0, 3).map((stop, index) => (
-                  <View key={stop.id} style={styles.stopRow}>
-                    <Text style={styles.stopIndex}>{index + 1}</Text>
-                    <Text style={styles.stopText}>{stop.name}</Text>
-                  </View>
-                ))}
-              </View>
-
-              <Text style={styles.tapHint}>Tap the card for full detail and booking handoff.</Text>
             </View>
-          </Pressable>
-        </Animated.View>
-      </View>
+          ) : null}
 
-      <View style={styles.actions}>
-        <ActionButton
-          label="Skip"
-          variant="secondary"
-          onPress={() => forceSwipe("left")}
-          style={styles.actionButton}
-        />
-        <ActionButton
-          label="Save plan"
-          onPress={() => forceSwipe("right")}
-          style={styles.actionButton}
-        />
+          <Animated.View
+            {...panResponder.panHandlers}
+            style={[
+              styles.card,
+              {
+                width: deckWidth,
+                minHeight: cardHeight,
+                transform: [...position.getTranslateTransform(), { rotate }],
+              },
+            ]}
+          >
+            <Pressable
+              style={styles.cardPressable}
+              onPress={() => onOpenPlan(currentPlan)}
+            >
+              {currentPlan.heroImageUrl ? (
+                <Image
+                  source={{ uri: currentPlan.heroImageUrl }}
+                  style={[styles.image, { height: imageHeight }]}
+                />
+              ) : (
+                <View
+                  style={[
+                    styles.image,
+                    styles.imagePlaceholder,
+                    { height: imageHeight },
+                  ]}
+                />
+              )}
+
+              <Animated.View style={[styles.likeBadge, { opacity: likeOpacity }]}>
+                <Text style={styles.likeBadgeText}>SAVE</Text>
+              </Animated.View>
+
+              <Animated.View style={[styles.nopeBadge, { opacity: nopeOpacity }]}>
+                <Text style={styles.nopeBadgeText}>SKIP</Text>
+              </Animated.View>
+
+              <View style={styles.cardBody}>
+                <Text style={styles.kicker}>
+                  {currentPlan.templateHint || "Planner suggestion"}
+                </Text>
+
+                <Text style={styles.title}>{currentPlan.title}</Text>
+
+                <Text style={styles.subtitle} numberOfLines={2}>
+                  {currentPlan.hook}
+                </Text>
+
+                <View style={styles.metaRow}>
+                  {currentPlan.durationLabel ? (
+                    <MetaPill label={currentPlan.durationLabel} />
+                  ) : null}
+                  {currentPlan.costBand ? (
+                    <MetaPill label={currentPlan.costBand} />
+                  ) : null}
+                  {currentPlan.weather ? (
+                    <MetaPill label={currentPlan.weather} tone="cool" />
+                  ) : null}
+                </View>
+
+                <View style={styles.stopList}>
+                  {currentPlan.stops.slice(0, 3).map((stop, index) => (
+                    <View key={stop.id} style={styles.stopRow}>
+                      <Text style={styles.stopIndex}>{index + 1}</Text>
+                      <Text style={styles.stopText} numberOfLines={1}>
+                        {stop.name}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+
+                <Text style={styles.tapHint}>Tap for full details & booking</Text>
+              </View>
+            </Pressable>
+          </Animated.View>
+        </View>
+
+        <View style={[styles.actions, { width: deckWidth }]}>
+          <ActionButton
+            label="Skip"
+            variant="secondary"
+            onPress={() => forceSwipe("left")}
+            style={[styles.actionButton, styles.actionButtonLeft]}
+          />
+          <ActionButton
+            label="Save plan ♡"
+            onPress={() => forceSwipe("right")}
+            style={styles.actionButton}
+          />
+        </View>
       </View>
     </View>
   );
@@ -220,7 +298,9 @@ function MetaPill({
 }) {
   return (
     <View style={[styles.metaPill, tone === "cool" && styles.metaPillCool]}>
-      <Text style={[styles.metaPillText, tone === "cool" && styles.metaPillTextCool]}>
+      <Text
+        style={[styles.metaPillText, tone === "cool" && styles.metaPillTextCool]}
+      >
         {label}
       </Text>
     </View>
@@ -228,83 +308,98 @@ function MetaPill({
 }
 
 const styles = StyleSheet.create({
+  flex: {
+    flex: 1,
+  },
   container: {
     flex: 1,
-    gap: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 12,
   },
   deckArea: {
     flex: 1,
-    justifyContent: "center",
+    width: "100%",
     alignItems: "center",
-    minHeight: 580,
+    justifyContent: "center",
+    position: "relative",
   },
   card: {
-    width: "100%",
-    maxWidth: 420,
-    backgroundColor: palette.panel,
-    borderRadius: 30,
-    overflow: "hidden",
     position: "absolute",
+    width: "100%",
+    backgroundColor: palette.panel,
+    borderRadius: 28,
+    overflow: "hidden",
     borderWidth: 1,
     borderColor: palette.border,
     shadowColor: "#020617",
-    shadowOpacity: 0.34,
-    shadowRadius: 28,
-    shadowOffset: { width: 0, height: 16 },
+    shadowOpacity: 0.3,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 14 },
     elevation: 10,
+  },
+  nextCard: {
+    transform: [{ scale: 0.96 }, { translateY: 12 }],
+    opacity: 0.45,
   },
   cardPressable: {
     flex: 1,
   },
-  nextCard: {
-    transform: [{ scale: 0.96 }, { translateY: 14 }],
-    opacity: 0.5,
-  },
   image: {
     width: "100%",
-    height: 292,
+  },
+  imagePlaceholder: {
+    backgroundColor: "rgba(18, 36, 58, 0.9)",
   },
   cardBody: {
-    padding: 20,
-    gap: 12,
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 18,
   },
   kicker: {
     color: palette.accentWarm,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "800",
     letterSpacing: 0.8,
     textTransform: "uppercase",
+    marginBottom: 8,
   },
   title: {
-    fontSize: 28,
-    lineHeight: 33,
+    fontSize: 24,
+    lineHeight: 29,
     fontWeight: "900",
     color: palette.text,
+    marginBottom: 8,
   },
   subtitle: {
-    fontSize: 15,
-    lineHeight: 22,
+    fontSize: 14,
+    lineHeight: 21,
     color: palette.textMuted,
+    marginBottom: 12,
   },
   metaRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
+    marginBottom: 10,
   },
   metaPill: {
     borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: palette.border,
+    marginRight: 8,
+    marginBottom: 8,
   },
   metaPillCool: {
     backgroundColor: "rgba(52, 211, 153, 0.12)",
     borderColor: "rgba(52, 211, 153, 0.24)",
   },
   metaPillText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "700",
     color: palette.textSoft,
   },
@@ -312,79 +407,90 @@ const styles = StyleSheet.create({
     color: "#b4f5dd",
   },
   stopList: {
-    gap: 10,
+    marginBottom: 10,
   },
   stopRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    marginBottom: 8,
   },
   stopIndex: {
-    width: 24,
+    width: 22,
     color: palette.accent,
     fontWeight: "900",
+    fontSize: 13,
   },
   stopText: {
     color: palette.textSoft,
-    fontSize: 14,
+    fontSize: 13,
+    fontWeight: "600",
     flex: 1,
   },
   tapHint: {
     color: palette.accentWarm,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "700",
-  },
-  actions: {
-    flexDirection: "row",
-    gap: 12,
-    paddingBottom: 8,
-  },
-  actionButton: {
-    flex: 1,
+    opacity: 0.7,
   },
   likeBadge: {
     position: "absolute",
-    top: 24,
-    right: 18,
+    top: 20,
+    right: 16,
     borderWidth: 2,
     borderColor: palette.success,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 10,
     transform: [{ rotate: "10deg" }],
     backgroundColor: "rgba(7, 17, 31, 0.84)",
+    zIndex: 2,
   },
   likeBadgeText: {
     color: "#a7f3d0",
     fontWeight: "900",
-    fontSize: 18,
+    fontSize: 16,
   },
   nopeBadge: {
     position: "absolute",
-    top: 24,
-    left: 18,
+    top: 20,
+    left: 16,
     borderWidth: 2,
     borderColor: palette.danger,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 10,
     transform: [{ rotate: "-10deg" }],
     backgroundColor: "rgba(7, 17, 31, 0.84)",
+    zIndex: 2,
   },
   nopeBadgeText: {
     color: "#fecdd3",
     fontWeight: "900",
-    fontSize: 18,
+    fontSize: 16,
+  },
+  actions: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 12,
+  },
+  actionButton: {
+    flex: 1,
+  },
+  actionButtonLeft: {
+    marginRight: 12,
   },
   emptyWrap: {
+    flex: 1,
     alignItems: "center",
-    gap: 10,
+    justifyContent: "center",
     paddingVertical: 36,
+    paddingHorizontal: 24,
   },
   emptyTitle: {
     fontSize: 24,
     fontWeight: "900",
     color: palette.text,
+    marginBottom: 10,
   },
   emptyText: {
     color: palette.textMuted,
