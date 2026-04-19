@@ -6,6 +6,7 @@ import asyncio
 import logging
 import math
 import re
+import time
 from dataclasses import dataclass
 from datetime import timezone
 from difflib import SequenceMatcher
@@ -13,6 +14,7 @@ from typing import Any
 
 import httpx
 
+from back_end.clients.api_trace import ApiTraceLogger
 from back_end.domain.models import (
     CandidatePlace,
     ComputedRoute,
@@ -127,6 +129,10 @@ class MapsResponseSchemaError(MapsClientError):
     """Raised when Google Maps returns an unexpected response shape."""
 
 
+class NoPlacePhotoError(MapsClientError):
+    """Raised when a place has no Google photo reference to resolve."""
+
+
 class PlaceMatchError(MapsClientError):
     """Base class for place-match failures."""
 
@@ -145,13 +151,15 @@ class _ScoredPlaceCandidate:
     exact_name: bool
     name_similarity: float
     straight_line_distance_meters: float
+    match_kind: str
     postcode_match: bool
     locality_match: bool
     region_match: bool
 
     @property
-    def sort_key(self) -> tuple[int, int, int, float, float]:
+    def sort_key(self) -> tuple[int, int, int, int, float, float]:
         return (
+            1 if self.match_kind == "address_match" else 0,
             1 if self.exact_name else 0,
             1 if self.postcode_match else 0,
             1 if self.locality_match else 0,
@@ -168,10 +176,12 @@ class GoogleMapsClient:
         settings: MapsSettings,
         *,
         http_client: httpx.AsyncClient | None = None,
+        trace_logger: ApiTraceLogger | None = None,
     ) -> None:
         self._settings = settings
         self._http_client = http_client or httpx.AsyncClient()
         self._owns_http_client = http_client is None
+        self._trace_logger = trace_logger
 
     async def __aenter__(self) -> "GoogleMapsClient":
         return self
@@ -213,6 +223,8 @@ class GoogleMapsClient:
             )
 
         query_parts = [candidate.name]
+        if candidate.address:
+            query_parts.append(candidate.address)
         if candidate.locality:
             query_parts.append(candidate.locality)
         if candidate.region:
@@ -273,17 +285,23 @@ class GoogleMapsClient:
 
         for place in places:
             distance_meters = _haversine_meters(coordinates, place.location)
-            if distance_meters > self._settings.max_match_distance_meters:
-                rejection_reasons.append(
-                    f"{place.place_id}: distance {distance_meters:.1f}m exceeds "
-                    f"threshold {self._settings.max_match_distance_meters:.1f}m"
-                )
-                continue
+            street_status = _street_address_status(candidate, place)
+            address_match = street_status == "address_match"
 
             if not _address_compatible(candidate, place):
                 rejection_reasons.append(
                     f"{place.place_id}: address mismatch against candidate locality/"
                     "region/postcode"
+                )
+                continue
+
+            if (
+                not address_match
+                and distance_meters > self._settings.max_match_distance_meters
+            ):
+                rejection_reasons.append(
+                    f"{place.place_id}: distance {distance_meters:.1f}m exceeds "
+                    f"threshold {self._settings.max_match_distance_meters:.1f}m"
                 )
                 continue
 
@@ -293,7 +311,11 @@ class GoogleMapsClient:
             name_similarity = SequenceMatcher(
                 None, normalized_candidate_name, normalized_google_name
             ).ratio()
-            if not exact_name and name_similarity < self._settings.min_name_similarity:
+            if (
+                not address_match
+                and not exact_name
+                and name_similarity < self._settings.min_name_similarity
+            ):
                 rejection_reasons.append(
                     f"{place.place_id}: name similarity {name_similarity:.3f} below "
                     f"threshold {self._settings.min_name_similarity:.3f}"
@@ -306,6 +328,15 @@ class GoogleMapsClient:
                     exact_name=exact_name,
                     name_similarity=name_similarity,
                     straight_line_distance_meters=distance_meters,
+                    match_kind=(
+                        "address_match"
+                        if address_match
+                        else (
+                            "coord_name_address_disagrees"
+                            if street_status == "rejected_street"
+                            else "coord_name"
+                        )
+                    ),
                     postcode_match=_postcode_match(candidate, place),
                     locality_match=_locality_match(candidate, place),
                     region_match=_region_match(candidate, place),
@@ -313,7 +344,7 @@ class GoogleMapsClient:
             )
 
         if not scored_candidates:
-            logger.error(
+            logger.warning(
                 "No confident Google place match for fsq_place_id=%s name=%r. "
                 "Rejected results: %s",
                 candidate.fsq_place_id,
@@ -341,6 +372,7 @@ class GoogleMapsClient:
             google_place=best.place,
             straight_line_distance_meters=best.straight_line_distance_meters,
             name_similarity=best.name_similarity,
+            match_kind=best.match_kind,
         )
 
     async def get_place_details(self, place_id: str) -> MapsPlace:
@@ -367,11 +399,20 @@ class GoogleMapsClient:
         to later server-side logic; photo names themselves are not durable.
         """
 
-        width = max_width_px or self._settings.default_photo_max_width_px
-        height = max_height_px or self._settings.default_photo_max_height_px
+        clean_photo_name = _required_photo_name(photo_name)
+        width = _photo_dimension(
+            max_width_px,
+            default=self._settings.default_photo_max_width_px,
+            field_name="max_width_px",
+        )
+        height = _photo_dimension(
+            max_height_px,
+            default=self._settings.default_photo_max_height_px,
+            field_name="max_height_px",
+        )
         payload = await self._request_json(
             "GET",
-            f"{self._settings.places_base_url}/{photo_name}/media",
+            f"{self._settings.places_base_url}/{clean_photo_name}/media",
             params={
                 "maxWidthPx": width,
                 "maxHeightPx": height,
@@ -387,6 +428,47 @@ class GoogleMapsClient:
                 "Photo media response is missing 'name' or 'photoUri'."
             )
         return PhotoMedia(name=name, photo_uri=photo_uri)
+
+    async def get_primary_photo_media(
+        self,
+        place: MapsPlace,
+        *,
+        max_width_px: int | None = None,
+        max_height_px: int | None = None,
+    ) -> PhotoMedia:
+        """Resolve the first Google Places photo for an already fetched place."""
+
+        if not place.photos:
+            logger.error(
+                "Google place %s (%s) has no photos; cannot build a place image.",
+                place.place_id,
+                place.display_name,
+            )
+            raise NoPlacePhotoError(
+                f"Google place {place.place_id!r} has no photos to resolve."
+            )
+        return await self.get_photo_media(
+            place.photos[0].name,
+            max_width_px=max_width_px,
+            max_height_px=max_height_px,
+        )
+
+    async def get_place_primary_photo_media(
+        self,
+        place_id: str,
+        *,
+        max_width_px: int | None = None,
+        max_height_px: int | None = None,
+    ) -> PhotoMedia:
+        """Fetch place details and resolve the first Google Places photo."""
+
+        clean_place_id = _required_place_id(place_id)
+        place = await self.get_place_details(clean_place_id)
+        return await self.get_primary_photo_media(
+            place,
+            max_width_px=max_width_px,
+            max_height_px=max_height_px,
+        )
 
     async def compute_route(self, route_request: RouteRequest) -> ComputedRoute:
         """Compute a single route between two coordinates."""
@@ -674,24 +756,25 @@ class GoogleMapsClient:
                 raise MapsResponseSchemaError(
                     "photo authorAttributions must be a list."
                 )
-            attributions = tuple(
-                PhotoAuthorAttribution(
-                    display_name=_optional_str(attr.get("displayName"))
-                    if isinstance(attr, dict)
-                    else None,
-                    uri=_optional_str(attr.get("uri")) if isinstance(attr, dict) else None,
-                    photo_uri=_optional_str(attr.get("photoUri"))
-                    if isinstance(attr, dict)
-                    else None,
+            attributions: list[PhotoAuthorAttribution] = []
+            for attr in raw_attributions:
+                if not isinstance(attr, dict):
+                    raise MapsResponseSchemaError(
+                        "photo authorAttributions entries must be objects."
+                    )
+                attributions.append(
+                    PhotoAuthorAttribution(
+                        display_name=_optional_str(attr.get("displayName")),
+                        uri=_optional_str(attr.get("uri")),
+                        photo_uri=_optional_str(attr.get("photoUri")),
+                    )
                 )
-                for attr in raw_attributions
-            )
             photos.append(
                 PhotoAsset(
                     name=name,
                     width_px=_optional_int(raw_photo.get("widthPx")),
                     height_px=_optional_int(raw_photo.get("heightPx")),
-                    author_attributions=attributions,
+                    author_attributions=tuple(attributions),
                 )
             )
         return tuple(photos)
@@ -748,7 +831,9 @@ class GoogleMapsClient:
 
         attempts = self._settings.retry_count + 1
         last_exception: Exception | None = None
+        request_body = kwargs.get("json")
         for attempt in range(1, attempts + 1):
+            started_at = time.monotonic()
             try:
                 response = await self._http_client.request(
                     method,
@@ -758,6 +843,15 @@ class GoogleMapsClient:
                     **kwargs,
                 )
             except httpx.HTTPError as exc:
+                await self._trace_exchange(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    request_body=request_body,
+                    attempt=attempt,
+                    error=exc,
+                    duration_ms=(time.monotonic() - started_at) * 1000.0,
+                )
                 logger.error(
                     "Google Maps request failed on attempt %d/%d for %s %s: %s",
                     attempt,
@@ -773,6 +867,15 @@ class GoogleMapsClient:
                     f"Google Maps request failed for {method} {url}: {exc}"
                 ) from exc
 
+            await self._trace_exchange(
+                method=method,
+                url=url,
+                headers=headers,
+                request_body=request_body,
+                attempt=attempt,
+                response=response,
+                duration_ms=(time.monotonic() - started_at) * 1000.0,
+            )
             if response.status_code < 400:
                 return response
 
@@ -795,6 +898,32 @@ class GoogleMapsClient:
 
         raise MapsUpstreamError(
             f"Google Maps request failed for {method} {url}: {last_exception}"
+        )
+
+    async def _trace_exchange(
+        self,
+        *,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        request_body: Any,
+        attempt: int,
+        response: httpx.Response | None = None,
+        error: BaseException | None = None,
+        duration_ms: float | None = None,
+    ) -> None:
+        if self._trace_logger is None:
+            return
+        await self._trace_logger.log_http_exchange(
+            service="google_maps",
+            method=method,
+            url=url,
+            request_headers=headers,
+            request_body=request_body,
+            attempt=attempt,
+            response=response,
+            error=error,
+            duration_ms=duration_ms,
         )
 
 
@@ -843,6 +972,44 @@ def _nested_str(payload: dict[str, Any], path: tuple[str, ...]) -> str | None:
             return None
         current = current.get(key)
     return _optional_str(current)
+
+
+def _required_place_id(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise MapsClientError("place_id must be a non-empty string.")
+    if "/" in value.strip():
+        raise MapsClientError("place_id must be a bare Google place id, not a resource name.")
+    return value.strip()
+
+
+def _required_photo_name(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise MapsClientError("photo_name must be a non-empty Google photo resource name.")
+    clean = value.strip()
+    if clean.startswith("/") or "://" in clean:
+        raise MapsClientError(
+            "photo_name must be a Google photo resource name, not a URL or path."
+        )
+    if (
+        not clean.startswith("places/")
+        or "/photos/" not in clean
+        or clean.endswith("/photos/")
+        or clean.endswith("/media")
+    ):
+        raise MapsClientError(
+            "photo_name must look like 'places/{place_id}/photos/{photo_reference}'."
+        )
+    return clean
+
+
+def _photo_dimension(value: int | None, *, default: int, field_name: str) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise MapsClientError(f"{field_name} must be a positive integer.")
+    if value <= 0:
+        raise MapsClientError(f"{field_name} must be a positive integer.")
+    return value
 
 
 def _parse_duration_seconds(value: Any) -> float | None:
@@ -905,13 +1072,58 @@ def _address_compatible(candidate: CandidatePlace, place: MapsPlace) -> bool:
     if candidate.postcode and place.postal_postcode:
         if candidate.postcode.strip() != place.postal_postcode.strip():
             return False
-    if candidate.locality and place.postal_locality:
-        if _normalize_name(candidate.locality) != _normalize_name(place.postal_locality):
-            return False
     if candidate.region and place.postal_region:
         if _canonical_region(candidate.region) != _canonical_region(place.postal_region):
             return False
     return True
+
+
+def _street_address_status(candidate: CandidatePlace, place: MapsPlace) -> str:
+    """Return a cheap street-address match status for local-vs-Google matching."""
+
+    candidate_address = (candidate.address or "").strip()
+    google_address = (place.formatted_address or "").strip()
+    if not candidate_address or not google_address:
+        return "unknown"
+
+    candidate_streets = _street_address_keys(candidate_address)
+    google_streets = _street_address_keys(google_address)
+    if not candidate_streets or not google_streets:
+        return "unknown"
+
+    if candidate_streets & google_streets and (
+        not candidate.postcode
+        or not place.postal_postcode
+        or candidate.postcode.strip() == place.postal_postcode.strip()
+    ):
+        return "address_match"
+    return "rejected_street"
+
+
+def _street_address_keys(value: str) -> set[str]:
+    normalized = _normalize_street_address(value)
+    matches = re.findall(
+        r"\b(\d+[a-z]?)\s+([a-z][a-z\s]{1,60}?)\s+"
+        r"(street|road|avenue|lane|drive|place|boulevard|way|highway|parade|"
+        r"terrace|court|crescent|mall|square|quay)\b",
+        normalized,
+    )
+    return {
+        _WHITESPACE_RE.sub(" ", f"{number} {name} {suffix}").strip()
+        for number, name, suffix in matches
+    }
+
+
+def _normalize_street_address(value: str) -> str:
+    normalized = value.casefold().replace("&", " and ")
+    normalized = re.sub(r"\b(st)\b\.?", "street", normalized)
+    normalized = re.sub(r"\b(rd)\b\.?", "road", normalized)
+    normalized = re.sub(r"\b(ave|av)\b\.?", "avenue", normalized)
+    normalized = re.sub(r"\b(ln)\b\.?", "lane", normalized)
+    normalized = re.sub(r"\b(dr)\b\.?", "drive", normalized)
+    normalized = re.sub(r"\b(pl)\b\.?", "place", normalized)
+    normalized = _NON_ALNUM_RE.sub(" ", normalized)
+    return _WHITESPACE_RE.sub(" ", normalized).strip()
 
 
 def _canonical_region(value: str) -> str:

@@ -68,9 +68,12 @@ class BookingRequestBuilderTests(unittest.TestCase):
         payload = call_request.to_payload()
 
         self.assertEqual("+61412345678", payload["phone_number"])
+        self.assertTrue(payload["first_sentence"].startswith("Heyyy"))
         self.assertEqual("maya", payload["voice"])
         self.assertEqual(6, payload["max_duration"])
         self.assertEqual({"action": "hangup"}, payload["voicemail"])
+        self.assertIn("You are making a restaurant reservation.", payload["task"])
+        self.assertNotIn("AI assistant", payload["task"])
         self.assertIn("do not book a different time", payload["task"])
         self.assertIn("One vegetarian diner", payload["task"])
         self.assertEqual("Example Bistro", payload["request_data"]["restaurant_name"])
@@ -113,6 +116,18 @@ class BookingRequestBuilderTests(unittest.TestCase):
                 RestaurantBookingRequest(
                     restaurant_name="Example Bistro",
                     restaurant_phone_number="0412345678",
+                    arrival_time=self.arrival_time,
+                    party_size=2,
+                    booking_name="Emma",
+                )
+            )
+
+    def test_rejects_non_australian_restaurant_phone_number(self) -> None:
+        with self.assertRaises(BookingValidationError):
+            self.builder.build(
+                RestaurantBookingRequest(
+                    restaurant_name="Example Bistro",
+                    restaurant_phone_number="+12125550123",
                     arrival_time=self.arrival_time,
                     party_size=2,
                     booking_name="Emma",

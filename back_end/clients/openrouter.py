@@ -6,11 +6,13 @@ import asyncio
 import inspect
 import json
 import logging
+import time
 from typing import Any
 from uuid import uuid4
 
 import httpx
 
+from back_end.clients.api_trace import ApiTraceLogger
 from back_end.clients.settings import OpenRouterConfigurationError, OpenRouterSettings
 from back_end.llm.models import (
     AgentRunResult,
@@ -61,10 +63,12 @@ class OpenRouterClient:
         settings: OpenRouterSettings,
         *,
         http_client: httpx.AsyncClient | None = None,
+        trace_logger: ApiTraceLogger | None = None,
     ) -> None:
         self._settings = settings
         self._http_client = http_client or httpx.AsyncClient()
         self._owns_http_client = http_client is None
+        self._trace_logger = trace_logger
 
     async def __aenter__(self) -> "OpenRouterClient":
         return self
@@ -179,14 +183,22 @@ class OpenRouterClient:
                 plugins=plugins,
                 extra_body=extra_body,
             )
-            transcript.append(response.message)
-
             if not response.tool_calls:
+                transcript.append(response.message)
                 return AgentRunResult(
                     final_response=response,
                     transcript=tuple(transcript),
                     tool_executions=tuple(executions),
                 )
+
+            transcript.append(
+                OpenRouterMessage(
+                    role=response.message.role,
+                    content=None,
+                    name=response.message.name,
+                    tool_calls=response.message.tool_calls,
+                )
+            )
 
             if round_index >= round_trip_limit:
                 raise OpenRouterAgentLoopError(
@@ -262,16 +274,58 @@ class OpenRouterClient:
     ) -> dict[str, Any]:
         attempts = self._settings.retry_count + 1
         last_response: httpx.Response | None = None
+        headers = self._build_headers(request_id)
 
         for attempt_index in range(attempts):
-            response = await self._http_client.request(
-                method,
-                url,
-                json=body,
-                headers=self._build_headers(request_id),
-                timeout=self._settings.timeout_seconds,
-            )
+            started_at = time.monotonic()
+            try:
+                response = await self._http_client.request(
+                    method,
+                    url,
+                    json=body,
+                    headers=headers,
+                    timeout=self._settings.timeout_seconds,
+                )
+            except httpx.HTTPError as exc:
+                await self._trace_exchange(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    body=body,
+                    attempt=attempt_index + 1,
+                    request_id=request_id,
+                    error=exc,
+                    duration_ms=(time.monotonic() - started_at) * 1000.0,
+                )
+                if attempt_index < self._settings.retry_count:
+                    logger.warning(
+                        "OpenRouter request_id=%s failed with transport error on attempt "
+                        "%s/%s; retrying. error=%s",
+                        request_id,
+                        attempt_index + 1,
+                        attempts,
+                        exc,
+                    )
+                    continue
+                logger.error(
+                    "OpenRouter request_id=%s failed with transport error: %s",
+                    request_id,
+                    exc,
+                )
+                raise OpenRouterUpstreamError(
+                    f"OpenRouter request failed (request_id={request_id}): {exc}"
+                ) from exc
             last_response = response
+            await self._trace_exchange(
+                method=method,
+                url=url,
+                headers=headers,
+                body=body,
+                attempt=attempt_index + 1,
+                request_id=request_id,
+                response=response,
+                duration_ms=(time.monotonic() - started_at) * 1000.0,
+            )
             if response.status_code < 400:
                 break
 
@@ -337,6 +391,34 @@ class OpenRouterClient:
                 f"OpenRouter request failed (request_id={request_id}): {message}"
             )
         return payload
+
+    async def _trace_exchange(
+        self,
+        *,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        body: dict[str, Any],
+        attempt: int,
+        request_id: str,
+        response: httpx.Response | None = None,
+        error: BaseException | None = None,
+        duration_ms: float | None = None,
+    ) -> None:
+        if self._trace_logger is None:
+            return
+        await self._trace_logger.log_http_exchange(
+            service="openrouter",
+            method=method,
+            url=url,
+            request_headers=headers,
+            request_body=body,
+            attempt=attempt,
+            response=response,
+            error=error,
+            duration_ms=duration_ms,
+            metadata={"request_id": request_id},
+        )
 
     def _build_headers(self, request_id: str) -> dict[str, str]:
         headers = {
@@ -576,6 +658,9 @@ class OpenRouterClient:
             ) from exc
 
         output_text = _serialize_tool_result(result)
+        transcript_output_text = _serialize_tool_result(
+            _compact_tool_result_for_model(tool_call.name, result)
+        )
         return AgentToolExecution(
             call_id=tool_call.call_id,
             tool_name=tool_call.name,
@@ -584,7 +669,7 @@ class OpenRouterClient:
             tool_message=OpenRouterMessage(
                 role="tool",
                 tool_call_id=tool_call.call_id,
-                content=output_text,
+                content=transcript_output_text,
             ),
         )
 
@@ -629,3 +714,171 @@ def _serialize_tool_result(result: Any) -> str:
             "Tool result was not JSON-serializable; return a string, dict, list, "
             "number, boolean, or null."
         ) from exc
+
+
+def _compact_tool_result_for_model(tool_name: str, result: Any) -> Any:
+    if not isinstance(result, dict):
+        return result
+    if tool_name in {
+        "search_rag_places",
+        "search_rag_places_near_anchor",
+        "search_rag_places_near_latlng",
+    }:
+        return _compact_search_tool_result(result)
+    if tool_name == "get_place_profile":
+        return _compact_place_profile_result(result)
+    if tool_name == "verify_place":
+        return _compact_verify_place_result(result)
+    if tool_name == "verify_plan":
+        return _compact_verify_plan_result(result)
+    return result
+
+
+def _compact_search_tool_result(result: dict[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {
+        key: result.get(key)
+        for key in (
+            "query_text",
+            "stop_type",
+            "empty_reason",
+            "anchor_fsq_place_id",
+            "max_km",
+            "latitude",
+            "longitude",
+        )
+        if key in result
+    }
+    raw_results = result.get("results")
+    compact_results: list[dict[str, Any]] = []
+    if isinstance(raw_results, list):
+        for item in raw_results:
+            if not isinstance(item, dict):
+                continue
+            compact_item = {
+                key: item.get(key)
+                for key in (
+                    "fsq_place_id",
+                    "name",
+                    "final_score",
+                    "distance_km",
+                    "distance_from_seed_km",
+                    "locality",
+                    "quality_score",
+                )
+                if key in item
+            }
+            for list_key, limit in (
+                ("template_stop_tags", 4),
+                ("ambience_tags", 3),
+                ("setting_tags", 3),
+                ("drink_tags", 3),
+                ("evidence_snippets", 1),
+            ):
+                values = item.get(list_key)
+                if isinstance(values, list):
+                    compact_item[list_key] = values[:limit]
+                elif isinstance(values, tuple):
+                    compact_item[list_key] = list(values[:limit])
+            compact_results.append(compact_item)
+    compact["results"] = compact_results
+    return compact
+
+
+def _compact_place_profile_result(result: dict[str, Any]) -> dict[str, Any]:
+    compact = {
+        key: result.get(key)
+        for key in (
+            "fsq_place_id",
+            "name",
+            "locality",
+            "postcode",
+            "quality_score",
+        )
+        if key in result
+    }
+    for list_key, limit in (
+        ("template_stop_tags", 6),
+        ("ambience_tags", 4),
+        ("setting_tags", 4),
+        ("activity_tags", 4),
+        ("drink_tags", 4),
+        ("booking_signals", 4),
+        ("evidence_snippets", 2),
+    ):
+        values = result.get(list_key)
+        if isinstance(values, list):
+            compact[list_key] = values[:limit]
+    return compact
+
+
+def _compact_verify_place_result(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: result.get(key)
+        for key in (
+            "fsq_place_id",
+            "matched",
+            "display_name",
+            "business_status",
+            "rating",
+            "user_rating_count",
+            "open_at_plan_time",
+            "failure_reason",
+        )
+        if key in result
+    }
+
+
+def _compact_verify_plan_result(result: dict[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {}
+    feasibility = result.get("feasibility")
+    if isinstance(feasibility, dict):
+        compact["feasibility"] = {
+            key: feasibility.get(key)
+            for key in (
+                "all_venues_matched",
+                "all_open_at_plan_time",
+                "all_legs_under_threshold",
+                "summary_reasons",
+            )
+            if key in feasibility
+        }
+    raw_stops = result.get("stops_verification")
+    if isinstance(raw_stops, list):
+        compact["stops_verification"] = [
+            {
+                key: stop.get(key)
+                for key in (
+                    "kind",
+                    "stop_type",
+                    "fsq_place_id",
+                    "ok",
+                    "matched",
+                    "business_status",
+                    "open_at_plan_time",
+                    "failure_reason",
+                    "open_failure_reason",
+                )
+                if isinstance(stop, dict) and key in stop
+            }
+            for stop in raw_stops
+            if isinstance(stop, dict)
+        ]
+    raw_legs = result.get("legs")
+    if isinstance(raw_legs, list):
+        compact["legs"] = [
+            {
+                key: leg.get(key)
+                for key in (
+                    "from_stop_index",
+                    "to_stop_index",
+                    "status",
+                    "duration_seconds",
+                    "under_threshold",
+                    "failure_reason",
+                )
+                if isinstance(leg, dict) and key in leg
+            }
+            for leg in raw_legs
+            if isinstance(leg, dict)
+        ]
+    return compact

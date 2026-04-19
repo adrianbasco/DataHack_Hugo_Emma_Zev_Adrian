@@ -70,10 +70,33 @@ def build_location_candidate_pool(
     if not path.exists():
         raise FileNotFoundError(f"RAG documents parquet not found at {path}.")
 
-    documents = pd.read_parquet(path, columns=list(REQUIRED_RAG_DOCUMENT_COLUMNS))
-    _validate_columns(documents, REQUIRED_RAG_DOCUMENT_COLUMNS, source=path)
-    if documents.empty:
-        raise PrecacheCandidatePoolError(f"RAG documents parquet {path} is empty.")
+    documents = _load_candidate_pool_documents(path)
+    return build_location_candidate_pool_from_documents(
+        rag_documents=documents,
+        bucket=bucket,
+        max_candidates=max_candidates,
+    )
+
+
+def build_location_candidate_pool_from_documents(
+    *,
+    rag_documents: pd.DataFrame,
+    bucket: LocationBucket,
+    max_candidates: int = 250,
+) -> LocationCandidatePool:
+    """Build a scoped candidate pool from an already loaded RAG document frame.
+
+    This avoids repeatedly re-reading the same parquet when building multiple
+    bucket pools in one process, which keeps the precache dry-run path fast and
+    deterministic.
+    """
+
+    if max_candidates <= 0:
+        raise ValueError("max_candidates must be positive.")
+    if bucket.radius_km <= 0:
+        raise ValueError("bucket.radius_km must be positive.")
+
+    documents = _validated_candidate_pool_documents(rag_documents, source="DataFrame")
 
     with_coords = documents.dropna(subset=["latitude", "longitude"]).copy()
     dropped = len(documents) - len(with_coords)
@@ -139,6 +162,22 @@ def build_location_candidate_pool(
         target_plan_count=target_count,
         empty_reason=None,
     )
+
+
+def _load_candidate_pool_documents(path: Path) -> pd.DataFrame:
+    documents = pd.read_parquet(path, columns=list(REQUIRED_RAG_DOCUMENT_COLUMNS))
+    return _validated_candidate_pool_documents(documents, source=path)
+
+
+def _validated_candidate_pool_documents(
+    documents: pd.DataFrame,
+    *,
+    source: Path | str,
+) -> pd.DataFrame:
+    _validate_columns(documents, REQUIRED_RAG_DOCUMENT_COLUMNS, source=source)
+    if documents.empty:
+        raise PrecacheCandidatePoolError(f"RAG documents parquet {source} is empty.")
+    return documents.copy()
 
 
 def plan_budget_for_pair(

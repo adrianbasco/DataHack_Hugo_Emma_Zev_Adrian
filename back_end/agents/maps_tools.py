@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -18,8 +20,11 @@ from back_end.clients.maps import (
 )
 from back_end.clients.maps_hours import is_open_at_plan_time
 from back_end.domain.models import (
+    CandidatePlace,
     ComputedRoute,
     LatLng,
+    MapsOpeningHours,
+    MapsPlace,
     MapsPlaceMatch,
     RouteRequest,
     TravelMode,
@@ -46,9 +51,27 @@ class _MatchFailure:
 class MapsVerificationCache:
     """In-process cache for Maps verification during one pre-cache run."""
 
+    cache_path: Path | None = None
     _place_matches: dict[str, MapsPlaceMatch | _MatchFailure] = field(
         default_factory=dict
     )
+
+    def __post_init__(self) -> None:
+        if self.cache_path is None or not self.cache_path.exists():
+            return
+        try:
+            cached = pd.read_parquet(self.cache_path)
+        except Exception as exc:
+            logger.error("Could not read Maps verification cache %s: %s", self.cache_path, exc)
+            raise
+        for raw in cached.to_dict(orient="records"):
+            fsq_place_id = str(raw.get("fsq_place_id") or "").strip()
+            if not fsq_place_id:
+                logger.error("Maps verification cache row is missing fsq_place_id: %r", raw)
+                continue
+            parsed = _cache_row_to_match(raw)
+            if parsed is not None:
+                self._place_matches[fsq_place_id] = parsed
 
     def get_place_match(self, fsq_place_id: str) -> MapsPlaceMatch | _MatchFailure | None:
         return self._place_matches.get(fsq_place_id)
@@ -59,6 +82,17 @@ class MapsVerificationCache:
         value: MapsPlaceMatch | _MatchFailure,
     ) -> None:
         self._place_matches[fsq_place_id] = value
+        self._flush()
+
+    def _flush(self) -> None:
+        if self.cache_path is None:
+            return
+        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        rows = [
+            _match_to_cache_row(fsq_place_id, value)
+            for fsq_place_id, value in sorted(self._place_matches.items())
+        ]
+        pd.DataFrame(rows).to_parquet(self.cache_path, index=False)
 
 
 class MapsPlaceResolver:
@@ -116,7 +150,7 @@ class MapsPlaceResolver:
         try:
             resolved = await self._maps_client.resolve_place_match(candidate)
         except (NoPlaceMatchError, AmbiguousPlaceMatchError) as exc:
-            logger.error(
+            logger.warning(
                 "Google Maps could not confidently match fsq_place_id=%s: %s",
                 fsq_place_id,
                 exc,
@@ -679,6 +713,7 @@ def _matched_payload(
         "business_status": place.business_status or "UNKNOWN",
         "rating": place.rating,
         "user_rating_count": place.user_rating_count,
+        "match_kind": match.match_kind,
         "weekday_descriptions": weekday_descriptions,
         "open_at_plan_time": open_at_plan_time,
         "failure_reason": None,
@@ -794,6 +829,7 @@ def _unmatched_payload(
         "business_status": "UNKNOWN",
         "rating": None,
         "user_rating_count": None,
+        "match_kind": None,
         "weekday_descriptions": [],
         "open_at_plan_time": None,
         "failure_reason": failure_reason,
@@ -910,6 +946,207 @@ def _route_failure_payload(
         "warnings": [],
         "failure_reason": failure_reason,
     }
+
+
+def _match_to_cache_row(
+    fsq_place_id: str,
+    value: MapsPlaceMatch | _MatchFailure,
+) -> dict[str, Any]:
+    if isinstance(value, _MatchFailure):
+        return {
+            "fsq_place_id": fsq_place_id,
+            "status": "failed",
+            "failure_reason": value.reason,
+            "match_kind": None,
+            "candidate_name": None,
+            "candidate_address": None,
+            "candidate_latitude": None,
+            "candidate_longitude": None,
+            "candidate_locality": None,
+            "candidate_region": None,
+            "candidate_postcode": None,
+            "google_place_id": None,
+            "google_resource_name": None,
+            "google_display_name": None,
+            "google_formatted_address": None,
+            "google_maps_uri": None,
+            "google_latitude": None,
+            "google_longitude": None,
+            "business_status": None,
+            "rating": None,
+            "user_rating_count": None,
+            "regular_opening_hours_json": None,
+            "straight_line_distance_meters": None,
+            "name_similarity": None,
+        }
+
+    candidate = value.candidate_place
+    place = value.google_place
+    return {
+        "fsq_place_id": fsq_place_id,
+        "status": "matched",
+        "failure_reason": None,
+        "match_kind": value.match_kind,
+        "candidate_name": candidate.name,
+        "candidate_address": candidate.address,
+        "candidate_latitude": candidate.latitude,
+        "candidate_longitude": candidate.longitude,
+        "candidate_locality": candidate.locality,
+        "candidate_region": candidate.region,
+        "candidate_postcode": candidate.postcode,
+        "google_place_id": place.place_id,
+        "google_resource_name": place.resource_name,
+        "google_display_name": place.display_name,
+        "google_formatted_address": place.formatted_address,
+        "google_maps_uri": place.google_maps_uri,
+        "google_latitude": place.location.latitude,
+        "google_longitude": place.location.longitude,
+        "business_status": place.business_status,
+        "rating": place.rating,
+        "user_rating_count": place.user_rating_count,
+        "regular_opening_hours_json": _opening_hours_to_cache_json(
+            place.regular_opening_hours
+        ),
+        "straight_line_distance_meters": value.straight_line_distance_meters,
+        "name_similarity": value.name_similarity,
+    }
+
+
+def _cache_row_to_match(raw: Mapping[str, Any]) -> MapsPlaceMatch | _MatchFailure | None:
+    status = _cache_optional_str(raw.get("status"))
+    if status == "failed":
+        return _MatchFailure(
+            reason=_cache_optional_str(raw.get("failure_reason"))
+            or "Cached Maps match failure."
+        )
+    if status != "matched":
+        logger.error("Maps verification cache row has invalid status=%r.", status)
+        return None
+
+    try:
+        fsq_place_id = _cache_required_str(raw, "fsq_place_id")
+        return MapsPlaceMatch(
+            candidate_place=CandidatePlace(
+                fsq_place_id=fsq_place_id,
+                name=_cache_required_str(raw, "candidate_name"),
+                address=_cache_optional_str(raw.get("candidate_address")),
+                latitude=_cache_optional_float(raw.get("candidate_latitude")),
+                longitude=_cache_optional_float(raw.get("candidate_longitude")),
+                locality=_cache_optional_str(raw.get("candidate_locality")),
+                region=_cache_optional_str(raw.get("candidate_region")),
+                postcode=_cache_optional_str(raw.get("candidate_postcode")),
+            ),
+            google_place=MapsPlace(
+                place_id=_cache_required_str(raw, "google_place_id"),
+                resource_name=(
+                    _cache_optional_str(raw.get("google_resource_name"))
+                    or f"places/{_cache_required_str(raw, 'google_place_id')}"
+                ),
+                display_name=_cache_required_str(raw, "google_display_name"),
+                location=LatLng(
+                    latitude=_cache_required_float(raw, "google_latitude"),
+                    longitude=_cache_required_float(raw, "google_longitude"),
+                ),
+                formatted_address=_cache_optional_str(
+                    raw.get("google_formatted_address")
+                ),
+                google_maps_uri=_cache_optional_str(raw.get("google_maps_uri")),
+                business_status=_cache_optional_str(raw.get("business_status")),
+                rating=_cache_optional_float(raw.get("rating")),
+                user_rating_count=_cache_optional_int(raw.get("user_rating_count")),
+                regular_opening_hours=_opening_hours_from_cache_json(
+                    raw.get("regular_opening_hours_json")
+                ),
+            ),
+            straight_line_distance_meters=_cache_required_float(
+                raw,
+                "straight_line_distance_meters",
+            ),
+            name_similarity=_cache_required_float(raw, "name_similarity"),
+            match_kind=_cache_optional_str(raw.get("match_kind")) or "cached",
+        )
+    except (TypeError, ValueError) as exc:
+        logger.error("Invalid Maps verification cache row %r: %s", raw, exc)
+        return None
+
+
+def _opening_hours_to_cache_json(opening_hours: MapsOpeningHours | None) -> str | None:
+    if opening_hours is None:
+        return None
+    return json.dumps(
+        {
+            "open_now": opening_hours.open_now,
+            "weekday_descriptions": list(opening_hours.weekday_descriptions),
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _opening_hours_from_cache_json(value: Any) -> MapsOpeningHours | None:
+    text = _cache_optional_str(value)
+    if text is None:
+        return None
+    parsed = json.loads(text)
+    if not isinstance(parsed, dict):
+        raise ValueError("regular_opening_hours_json must contain an object.")
+    descriptions = parsed.get("weekday_descriptions", [])
+    if not isinstance(descriptions, list) or not all(
+        isinstance(item, str) for item in descriptions
+    ):
+        raise ValueError("weekday_descriptions must be a list of strings.")
+    open_now = parsed.get("open_now")
+    if open_now is not None and not isinstance(open_now, bool):
+        raise ValueError("open_now must be a bool or null.")
+    return MapsOpeningHours(
+        open_now=open_now,
+        weekday_descriptions=tuple(descriptions),
+    )
+
+
+def _cache_required_str(raw: Mapping[str, Any], field_name: str) -> str:
+    value = _cache_optional_str(raw.get(field_name))
+    if value is None:
+        raise ValueError(f"{field_name} is required.")
+    return value
+
+
+def _cache_optional_str(value: Any) -> str | None:
+    if value is None or _is_nan(value):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _cache_required_float(raw: Mapping[str, Any], field_name: str) -> float:
+    value = _cache_optional_float(raw.get(field_name))
+    if value is None:
+        raise ValueError(f"{field_name} is required.")
+    return value
+
+
+def _cache_optional_float(value: Any) -> float | None:
+    if value is None or _is_nan(value):
+        return None
+    return float(value)
+
+
+def _cache_optional_int(value: Any) -> int | None:
+    if value is None or _is_nan(value):
+        return None
+    return int(value)
+
+
+def _is_nan(value: Any) -> bool:
+    try:
+        if pd.isna(value):
+            return True
+    except Exception:
+        pass
+    try:
+        return bool(value != value)
+    except Exception:
+        return False
 
 
 def _required_tool_string(payload: dict[str, Any], field_name: str) -> str:
