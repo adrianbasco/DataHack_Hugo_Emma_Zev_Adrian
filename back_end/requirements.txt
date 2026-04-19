@@ -19,3 +19,5 @@ numpy
 pandas
 pyyaml
 crawl4ai
+fastapi
+uvicorn

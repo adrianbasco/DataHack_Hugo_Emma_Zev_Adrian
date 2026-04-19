@@ -86,6 +86,11 @@ class PrecacheOutputTests(unittest.TestCase):
         self.assertEqual(list(OUTPUT_COLUMNS), list(first_df.columns))
         self.assertEqual("cbd", first_df.iloc[0]["bucket_id"])
         self.assertEqual("coffee_and_stroll", first_df.iloc[0]["template_id"])
+        self.assertEqual("Coffee and a stroll", first_df.iloc[0]["plan_title"])
+        self.assertEqual(
+            "2026-04-25T19:30:00+10:00",
+            first_df.iloc[0]["plan_time_iso"],
+        )
         self.assertEqual('["casual","romantic"]', first_df.iloc[0]["vibe"])
         self.assertEqual(
             '["fsq-cafe","fsq-park"]',
@@ -94,6 +99,14 @@ class PrecacheOutputTests(unittest.TestCase):
         self.assertEqual(2, int(first_df.iloc[0]["fsq_place_id_count"]))
         self.assertEqual("verified", json.loads(first_df.iloc[0]["verification_json"])["status"])
         self.assertEqual(3, len(json.loads(first_df.iloc[0]["stops_json"])))
+        self.assertEqual(
+            "Coffee and a stroll in the CBD.",
+            first_df.iloc[0]["search_text"],
+        )
+        self.assertEqual(
+            "Coffee and a stroll",
+            json.loads(first_df.iloc[0]["card_json"])["plan_title"],
+        )
 
         second_result = append_precache_plans(
             [_plan(model="anthropic/replacement-model", verification={"status": "rechecked"})],
@@ -193,6 +206,18 @@ class PrecacheOutputTests(unittest.TestCase):
 
         with self.assertRaises(PrecacheOutputError):
             read_precache_output(self.output_path)
+
+    def test_reader_upgrades_legacy_schema_with_new_card_columns(self) -> None:
+        append_precache_plans([_plan()], output_path=self.output_path)
+        legacy_df = pd.read_parquet(self.output_path).drop(
+            columns=["plan_title", "plan_hook", "plan_time_iso", "search_text", "card_json"]
+        )
+        legacy_df.to_parquet(self.output_path, index=False)
+
+        upgraded = read_precache_output(self.output_path)
+
+        self.assertIn("card_json", upgraded.columns)
+        self.assertTrue(pd.isna(upgraded.iloc[0]["card_json"]))
 
     def test_append_and_read_failures_dedupes_by_failure_id(self) -> None:
         first_result = append_precache_failures(
@@ -363,6 +388,9 @@ def _plan(
             "duration_hours": 1.5,
             "description": "A simple test plan.",
         },
+        plan_title="Coffee and a stroll",
+        plan_hook="A quick test date.",
+        plan_time_iso="2026-04-25T19:30:00+10:00",
         stops=stops
         if stops is not None
         else (
@@ -385,6 +413,17 @@ def _plan(
                 "name": "Park",
             },
         ),
+        search_text="Coffee and a stroll in the CBD.",
+        card_payload={
+            "version": 1,
+            "plan_title": "Coffee and a stroll",
+            "plan_hook": "A quick test date.",
+            "plan_time_iso": "2026-04-25T19:30:00+10:00",
+            "search_text": "Coffee and a stroll in the CBD.",
+            "stops": [],
+            "legs": [],
+            "feasibility": {},
+        },
         verification=verification if verification is not None else {"status": "verified"},
         generated_at_utc=datetime(2026, 4, 18, 10, 0, tzinfo=UTC),
         model=model,
