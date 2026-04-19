@@ -95,7 +95,7 @@ export default function ResultsScreen() {
         <SurfaceCard style={styles.centerCard}>
           <Text style={styles.centerTitle}>Couldn't generate ideas</Text>
           <Text style={styles.centerText}>{error}</Text>
-          <ActionButton label="Go back" variant="secondary" onPress={() => router.back()} />
+          <ActionButton label="Go back" variant="secondary" onPress={() => router.replace("/")} />
         </SurfaceCard>
       </ScreenShell>
     );
@@ -110,7 +110,7 @@ export default function ResultsScreen() {
           <Text style={styles.centerText}>
             Try loosening the constraints or switching to chat mode.
           </Text>
-          <ActionButton label="Go back" variant="secondary" onPress={() => router.back()} />
+          <ActionButton label="Go back" variant="secondary" onPress={() => router.replace("/")} />
         </SurfaceCard>
       </ScreenShell>
     );
@@ -124,7 +124,7 @@ export default function ResultsScreen() {
         <ActionButton
           label="← Edit"
           variant="secondary"
-          onPress={() => router.back()}
+          onPress={() => router.replace("/")}
           style={styles.backButton}
         />
         {warning ? (
@@ -142,7 +142,7 @@ export default function ResultsScreen() {
             params: { id: plan.id },
           })
         }
-        onFinished={() => router.push("/saved")}
+        onFinished={() => router.replace("/saved")}
       />
     </ScreenShell>
   );
