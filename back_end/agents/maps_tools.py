@@ -26,6 +26,8 @@ from back_end.domain.models import (
     MapsOpeningHours,
     MapsPlace,
     MapsPlaceMatch,
+    PhotoAsset,
+    PhotoAuthorAttribution,
     RouteRequest,
     TravelMode,
 )
@@ -710,12 +712,15 @@ def _matched_payload(
         "display_name": place.display_name,
         "formatted_address": place.formatted_address,
         "google_maps_uri": place.google_maps_uri,
+        "website_uri": place.website_uri,
         "business_status": place.business_status or "UNKNOWN",
         "rating": place.rating,
         "user_rating_count": place.user_rating_count,
         "match_kind": match.match_kind,
         "weekday_descriptions": weekday_descriptions,
         "open_at_plan_time": open_at_plan_time,
+        "primary_photo": _photo_payload(place.photos[0]) if place.photos else None,
+        "photos": _photo_list_payload(place.photos, max_items=3),
         "failure_reason": None,
     }
 
@@ -826,13 +831,49 @@ def _unmatched_payload(
         "display_name": None,
         "formatted_address": None,
         "google_maps_uri": None,
+        "website_uri": None,
         "business_status": "UNKNOWN",
         "rating": None,
         "user_rating_count": None,
         "match_kind": None,
         "weekday_descriptions": [],
         "open_at_plan_time": None,
+        "primary_photo": None,
+        "photos": [],
         "failure_reason": failure_reason,
+    }
+
+
+def _photo_list_payload(
+    photos: tuple[PhotoAsset, ...],
+    *,
+    max_items: int | None = None,
+) -> list[dict[str, Any]]:
+    payloads = [_photo_payload(photo) for photo in photos]
+    if max_items is not None:
+        return payloads[:max_items]
+    return payloads
+
+
+def _photo_payload(photo: PhotoAsset) -> dict[str, Any]:
+    return {
+        "name": photo.name,
+        "width_px": photo.width_px,
+        "height_px": photo.height_px,
+        "author_attributions": [
+            _photo_author_attribution_payload(attr)
+            for attr in photo.author_attributions
+        ],
+    }
+
+
+def _photo_author_attribution_payload(
+    attribution: PhotoAuthorAttribution,
+) -> dict[str, Any]:
+    return {
+        "display_name": attribution.display_name,
+        "uri": attribution.uri,
+        "photo_uri": attribution.photo_uri,
     }
 
 
@@ -970,12 +1011,14 @@ def _match_to_cache_row(
             "google_display_name": None,
             "google_formatted_address": None,
             "google_maps_uri": None,
+            "website_uri": None,
             "google_latitude": None,
             "google_longitude": None,
             "business_status": None,
             "rating": None,
             "user_rating_count": None,
             "regular_opening_hours_json": None,
+            "photos_json": None,
             "straight_line_distance_meters": None,
             "name_similarity": None,
         }
@@ -999,6 +1042,7 @@ def _match_to_cache_row(
         "google_display_name": place.display_name,
         "google_formatted_address": place.formatted_address,
         "google_maps_uri": place.google_maps_uri,
+        "website_uri": place.website_uri,
         "google_latitude": place.location.latitude,
         "google_longitude": place.location.longitude,
         "business_status": place.business_status,
@@ -1007,6 +1051,7 @@ def _match_to_cache_row(
         "regular_opening_hours_json": _opening_hours_to_cache_json(
             place.regular_opening_hours
         ),
+        "photos_json": _photos_to_cache_json(place.photos),
         "straight_line_distance_meters": value.straight_line_distance_meters,
         "name_similarity": value.name_similarity,
     }
@@ -1051,12 +1096,14 @@ def _cache_row_to_match(raw: Mapping[str, Any]) -> MapsPlaceMatch | _MatchFailur
                     raw.get("google_formatted_address")
                 ),
                 google_maps_uri=_cache_optional_str(raw.get("google_maps_uri")),
+                website_uri=_cache_optional_str(raw.get("website_uri")),
                 business_status=_cache_optional_str(raw.get("business_status")),
                 rating=_cache_optional_float(raw.get("rating")),
                 user_rating_count=_cache_optional_int(raw.get("user_rating_count")),
                 regular_opening_hours=_opening_hours_from_cache_json(
                     raw.get("regular_opening_hours_json")
                 ),
+                photos=_photos_from_cache_json(raw.get("photos_json")),
             ),
             straight_line_distance_meters=_cache_required_float(
                 raw,
@@ -1102,6 +1149,52 @@ def _opening_hours_from_cache_json(value: Any) -> MapsOpeningHours | None:
         open_now=open_now,
         weekday_descriptions=tuple(descriptions),
     )
+
+
+def _photos_to_cache_json(photos: tuple[PhotoAsset, ...]) -> str | None:
+    if not photos:
+        return None
+    return json.dumps(
+        [_photo_payload(photo) for photo in photos],
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _photos_from_cache_json(value: Any) -> tuple[PhotoAsset, ...]:
+    text = _cache_optional_str(value)
+    if text is None:
+        return ()
+    parsed = json.loads(text)
+    if not isinstance(parsed, list):
+        raise ValueError("photos_json must contain a list.")
+    photos: list[PhotoAsset] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            raise ValueError("photos_json entries must be objects.")
+        raw_attributions = item.get("author_attributions", [])
+        if not isinstance(raw_attributions, list):
+            raise ValueError("photo author_attributions must be a list.")
+        attributions: list[PhotoAuthorAttribution] = []
+        for raw_attr in raw_attributions:
+            if not isinstance(raw_attr, dict):
+                raise ValueError("photo author attribution entries must be objects.")
+            attributions.append(
+                PhotoAuthorAttribution(
+                    display_name=_cache_optional_str(raw_attr.get("display_name")),
+                    uri=_cache_optional_str(raw_attr.get("uri")),
+                    photo_uri=_cache_optional_str(raw_attr.get("photo_uri")),
+                )
+            )
+        photos.append(
+            PhotoAsset(
+                name=_cache_required_str(item, "name"),
+                width_px=_cache_optional_int(item.get("width_px")),
+                height_px=_cache_optional_int(item.get("height_px")),
+                author_attributions=tuple(attributions),
+            )
+        )
+    return tuple(photos)
 
 
 def _cache_required_str(raw: Mapping[str, Any], field_name: str) -> str:

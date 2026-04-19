@@ -459,6 +459,30 @@ class TemplateShapeValidationTests(unittest.TestCase):
 
         self.assertEqual("Dinner With A Sweet Finish", ideas[0].title)
 
+    def test_missing_title_falls_back_to_stop_names(self) -> None:
+        output = _valid_agent_output()
+        del output["date_ideas"][0]["title"]
+        output["date_ideas"][0]["stops"].append(
+            {
+                "kind": "venue",
+                "stop_type": "dessert_shop",
+                "fsq_place_id": "dessert-1",
+                "name": "Gelato Corner",
+                "description": "Finish with dessert.",
+                "why_it_fits": "A sweet ending.",
+            }
+        )
+
+        ideas = _parse_and_validate_ideas(
+            output,
+            retrieved_places=_retrieved_places_for_validation(),
+        )
+
+        self.assertEqual(
+            "Romantic Restaurant & Gelato Corner",
+            ideas[0].title,
+        )
+
     def test_template_validator_rejects_stop_count_mismatch(self) -> None:
         with self.assertRaisesRegex(DateIdeaAgentOutputError, "requires 3 stops"):
             _parse_and_validate_ideas(

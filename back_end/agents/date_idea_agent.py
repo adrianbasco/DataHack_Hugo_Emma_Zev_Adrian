@@ -1259,28 +1259,34 @@ def _parse_and_validate_ideas(
     for idea_index, raw_idea in enumerate(raw_ideas):
         if not isinstance(raw_idea, dict):
             raise DateIdeaAgentOutputError(f"date_ideas[{idea_index}] must be an object.")
-        title = _output_string_or_default(
-            raw_idea,
-            "title",
-            default=f"Date Night Plan {idea_index + 1}",
-        )
-        normalized_title = title.casefold()
-        if normalized_title in used_plan_titles:
-            raise DateIdeaAgentOutputError(f"Duplicate date idea title {title!r}.")
-        used_plan_titles.add(normalized_title)
+        raw_title = raw_idea.get("title")
+        title = raw_title.strip() if isinstance(raw_title, str) and raw_title.strip() else None
+        if title is None:
+            logger.warning(
+                "Date-idea agent output field %s was missing or empty; using fallback text.",
+                "title",
+            )
 
         raw_stops = raw_idea.get("stops")
         if not isinstance(raw_stops, list) or not raw_stops:
-            raise DateIdeaAgentOutputError(f"Date idea {title!r} must contain stops.")
+            raise DateIdeaAgentOutputError(
+                f"Date idea {(title or f'date_ideas[{idea_index}]')!r} must contain stops."
+            )
         stops = tuple(
             _parse_and_validate_stop(
                 raw_stop,
-                idea_title=title,
+                idea_title=(title or f"date_ideas[{idea_index}]"),
                 stop_index=stop_index,
                 retrieved_places=retrieved_places,
             )
             for stop_index, raw_stop in enumerate(raw_stops)
         )
+        if title is None:
+            title = _fallback_idea_title(stops, idea_index=idea_index)
+        normalized_title = title.casefold()
+        if normalized_title in used_plan_titles:
+            raise DateIdeaAgentOutputError(f"Duplicate date idea title {title!r}.")
+        used_plan_titles.add(normalized_title)
         if template_requirements is not None:
             stops = _coerce_stops_to_template_shape(
                 idea_title=title,
@@ -1581,6 +1587,26 @@ def _output_string_or_default(
         field_name,
     )
     return default
+
+
+def _fallback_idea_title(
+    stops: tuple[DateIdeaStop, ...],
+    *,
+    idea_index: int,
+) -> str:
+    venue_names = [
+        stop.name.strip()
+        for stop in stops
+        if stop.kind == "venue" and stop.name.strip()
+    ]
+    title_parts = venue_names or [stop.name.strip() for stop in stops if stop.name.strip()]
+    if not title_parts:
+        return f"Date Night Plan {idea_index + 1}"
+    if len(title_parts) == 1:
+        return title_parts[0]
+    if len(title_parts) == 2:
+        return f"{title_parts[0]} & {title_parts[1]}"
+    return f"{title_parts[0]}, {title_parts[1]} & {title_parts[2]}"
 
 
 def _optional_non_empty_string(value: Any, field_name: str) -> str | None:

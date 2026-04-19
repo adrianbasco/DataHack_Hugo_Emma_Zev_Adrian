@@ -40,7 +40,12 @@ OUTPUT_COLUMNS: tuple[str, ...] = (
     "template_duration_hours",
     "template_description",
     "template_metadata_json",
+    "plan_title",
+    "plan_hook",
+    "plan_time_iso",
     "stops_json",
+    "search_text",
+    "card_json",
     "fsq_place_ids_sorted",
     "fsq_place_id_count",
     "verification_json",
@@ -92,7 +97,12 @@ class PrecachePlanOutput:
     template_id: str
     bucket_metadata: Mapping[str, Any]
     template_metadata: Mapping[str, Any]
+    plan_title: str
+    plan_hook: str
+    plan_time_iso: str
     stops: Sequence[Mapping[str, Any]]
+    search_text: str
+    card_payload: Mapping[str, Any]
     verification: Mapping[str, Any]
     generated_at_utc: datetime | str
     model: str
@@ -353,6 +363,7 @@ def read_precache_output(
         raise FileNotFoundError(f"Pre-cache output parquet not found at {path}.")
 
     df = pd.read_parquet(path)
+    df = _upgrade_output_schema(df)
     _validate_output_schema(df, source=path)
     return df.loc[:, list(OUTPUT_COLUMNS)].copy()
 
@@ -489,7 +500,17 @@ def _record_to_row(
         ),
         "template_description": _optional_text(template_metadata.get("description")),
         "template_metadata_json": _json_dumps(template_metadata),
+        "plan_title": _required_text(record.plan_title, "plan_title"),
+        "plan_hook": _required_text(record.plan_hook, "plan_hook"),
+        "plan_time_iso": _normalize_iso_timestamp_preserving_offset(
+            record.plan_time_iso,
+            field_name="plan_time_iso",
+        ),
         "stops_json": _json_dumps(stops),
+        "search_text": _required_text(record.search_text, "search_text"),
+        "card_json": _json_dumps(
+            _validated_metadata(record.card_payload, required_fields=(), label="card_payload")
+        ),
         "fsq_place_ids_sorted": fsq_signature,
         "fsq_place_id_count": len(fsq_place_ids),
         "verification_json": _json_dumps(
@@ -508,6 +529,21 @@ def _record_to_row(
         "model": model,
     }
     return row
+
+
+def _upgrade_output_schema(df: pd.DataFrame) -> pd.DataFrame:
+    upgraded = df.copy()
+    defaults: dict[str, Any] = {
+        "plan_title": None,
+        "plan_hook": None,
+        "plan_time_iso": None,
+        "search_text": None,
+        "card_json": None,
+    }
+    for column, default in defaults.items():
+        if column not in upgraded.columns:
+            upgraded[column] = default
+    return upgraded
 
 
 def _failure_record_to_row(

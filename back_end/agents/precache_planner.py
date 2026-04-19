@@ -58,6 +58,7 @@ from back_end.clients.openrouter import (
 )
 from back_end.domain.models import LatLng, TravelMode
 from back_end.llm.models import AgentToolExecution
+from back_end.precache.cards import build_plan_card_payload
 from back_end.precache.models import LocationBucket, LocationCandidatePool
 from back_end.precache.output import (
     PrecachePlanOutput,
@@ -496,9 +497,11 @@ class PrecachePlanner:
             bucket=request.bucket,
             template=request.template,
             transport_mode=request.transport_mode,
+            plan_time_iso=request.plan_time_iso,
             idea=idea,
             verification=verification_payload,
             model=result.model,
+            rag_documents=self._rag_documents,
         )
         logger.info(
             "Precache planner produced plan bucket=%s template=%s signature=%s model=%s",
@@ -826,9 +829,11 @@ def _build_plan_output(
     bucket: LocationBucket,
     template: Mapping[str, Any],
     transport_mode: TravelMode,
+    plan_time_iso: str,
     idea: DateIdea,
     verification: Mapping[str, Any],
     model: str,
+    rag_documents: pd.DataFrame,
 ) -> PrecachePlanOutput:
     bucket_metadata: dict[str, Any] = {
         "bucket_id": bucket.bucket_id,
@@ -864,12 +869,40 @@ def _build_plan_output(
         }
         for stop in idea.stops
     ]
+    rag_documents_by_id = {
+        str(row["fsq_place_id"]): row.to_dict()
+        for _, row in rag_documents.iterrows()
+        if _nonempty_string(row.get("fsq_place_id"))
+    }
+    plan_title = idea.title.strip()
+    plan_hook = idea.hook.strip()
+    card_payload = build_plan_card_payload(
+        plan_title=plan_title,
+        plan_hook=plan_hook,
+        plan_time_iso=plan_time_iso,
+        bucket_id=bucket.bucket_id,
+        bucket_label=bucket.label,
+        template_id=str(template.get("id") or ""),
+        template_title=str(template.get("title") or ""),
+        template_description=_optional_str(template.get("description")),
+        vibe=_template_vibe_list(template.get("vibe")),
+        transport_mode=transport_mode.value,
+        model=model,
+        stops=stops_payload,
+        verification=verification,
+        rag_documents=rag_documents_by_id,
+    )
     return PrecachePlanOutput(
         bucket_id=bucket.bucket_id,
         template_id=str(template.get("id") or ""),
         bucket_metadata=bucket_metadata,
         template_metadata=template_metadata,
+        plan_title=plan_title,
+        plan_hook=plan_hook,
+        plan_time_iso=plan_time_iso,
         stops=stops_payload,
+        search_text=str(card_payload["search_text"]),
+        card_payload=card_payload,
         verification=verification,
         generated_at_utc=datetime.now(UTC),
         model=model,

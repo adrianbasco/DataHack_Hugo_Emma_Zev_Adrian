@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useState } from "react";
 import {
   ScrollView,
   Text,
@@ -8,27 +8,83 @@ import {
   StyleSheet,
   Share,
   Linking,
+  ActivityIndicator,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { mockPlans } from "../../lib/mockPlans";
+import { fetchPlan } from "../../lib/api";
+import { getSavedPlans } from "../../lib/storage";
+import { Plan } from "../../lib/types";
 
 export default function PlanDetailScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id?: string }>();
+  const [plan, setPlan] = useState<Plan | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(Boolean(id));
+  const [error, setError] = useState<string | null>(null);
 
-  const plan = useMemo(() => mockPlans.find((p) => p.id === id), [id]);
+  useEffect(() => {
+    let cancelled = false;
 
-  if (!plan) {
+    async function loadPlan() {
+      if (!id) {
+        setIsLoading(false);
+        setError("Missing plan id.");
+        return;
+      }
+      setIsLoading(true);
+      setError(null);
+      try {
+        const fetched = await fetchPlan(id);
+        if (cancelled) return;
+        setPlan(fetched);
+      } catch (err) {
+        try {
+          const savedPlans = await getSavedPlans();
+          if (cancelled) return;
+          const saved = savedPlans.find((item) => item.id === id) || null;
+          if (saved) {
+            setPlan(saved);
+            setError(null);
+            return;
+          }
+        } catch {}
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : "Failed to load plan.");
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
+      }
+    }
+
+    void loadPlan();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  if (isLoading) {
     return (
       <View style={styles.centered}>
-        <Text>Plan not found.</Text>
+        <ActivityIndicator size="large" color="#be185d" />
+        <Text style={styles.centeredText}>Loading plan...</Text>
       </View>
     );
   }
 
+  if (!plan) {
+    return (
+      <View style={styles.centered}>
+        <Text style={styles.centeredText}>{error || "Plan not found."}</Text>
+      </View>
+    );
+  }
+
+  const currentPlan = plan;
+
   async function handleShare() {
     await Share.share({
-      message: `${plan.title}\n${plan.vibeLine}\nStops: ${plan.stops
+      message: `${currentPlan.title}\n${currentPlan.vibeLine}\nStops: ${currentPlan.stops
         .map((s) => s.name)
         .join(" → ")}`,
     });
@@ -36,31 +92,31 @@ export default function PlanDetailScreen() {
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      {plan.heroImageUrl ? (
-        <Image source={{ uri: plan.heroImageUrl }} style={styles.heroImage} />
+      {currentPlan.heroImageUrl ? (
+        <Image source={{ uri: currentPlan.heroImageUrl }} style={styles.heroImage} />
       ) : null}
 
-      <Text style={styles.title}>{plan.title}</Text>
-      <Text style={styles.subtitle}>{plan.vibeLine}</Text>
-      {plan.summary ? <Text style={styles.summary}>{plan.summary}</Text> : null}
+      <Text style={styles.title}>{currentPlan.title}</Text>
+      <Text style={styles.subtitle}>{currentPlan.vibeLine}</Text>
+      {currentPlan.summary ? <Text style={styles.summary}>{currentPlan.summary}</Text> : null}
 
       <View style={styles.statsCard}>
         <View style={styles.statItem}>
-          <Text style={styles.statValue}>{plan.durationLabel}</Text>
+          <Text style={styles.statValue}>{currentPlan.durationLabel}</Text>
           <Text style={styles.statLabel}>Duration</Text>
         </View>
         <View style={styles.statItem}>
-          <Text style={styles.statValue}>{plan.costBand}</Text>
+          <Text style={styles.statValue}>{currentPlan.costBand}</Text>
           <Text style={styles.statLabel}>Estimate</Text>
         </View>
         <View style={styles.statItem}>
-          <Text style={styles.statValue}>{plan.weather || "-"}</Text>
+          <Text style={styles.statValue}>{currentPlan.weather || "-"}</Text>
           <Text style={styles.statLabel}>Weather</Text>
         </View>
       </View>
 
       <Text style={styles.sectionTitle}>Your Itinerary</Text>
-      {plan.stops.map((stop, index) => (
+      {currentPlan.stops.map((stop, index) => (
         <View key={stop.id} style={styles.stopCard}>
           <View style={styles.stopHeader}>
             <View style={styles.stopBadge}>
@@ -91,11 +147,11 @@ export default function PlanDetailScreen() {
         </View>
       ))}
 
-      {plan.transportLegs?.length ? (
+      {currentPlan.transportLegs?.length ? (
         <>
           <Text style={styles.sectionTitle}>Transport Summary</Text>
           <View style={styles.transportCard}>
-            {plan.transportLegs.map((leg, index) => (
+            {currentPlan.transportLegs.map((leg, index) => (
               <Text key={index} style={styles.transportRow}>
                 {leg.mode} · {leg.durationText}
               </Text>
@@ -125,6 +181,12 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 24,
+  },
+  centeredText: {
+    color: "#475569",
+    textAlign: "center",
   },
   container: {
     padding: 16,

@@ -99,6 +99,7 @@ class MapsPlace:
     location: LatLng
     formatted_address: str | None = None
     google_maps_uri: str | None = None
+    website_uri: str | None = None
     business_status: str | None = None
     rating: float | None = None
     user_rating_count: int | None = None

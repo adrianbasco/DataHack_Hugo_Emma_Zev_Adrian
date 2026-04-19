@@ -318,6 +318,9 @@ def _success(
             "duration_hours": 1.5,
             "description": "Single-stop dinner date.",
         },
+        plan_title=f"Venue {fsq_place_id}",
+        plan_hook="A single-stop dinner date.",
+        plan_time_iso="2026-04-25T19:30:00+10:00",
         stops=(
             {
                 "kind": "venue",
@@ -326,6 +329,17 @@ def _success(
                 "name": f"Venue {fsq_place_id}",
             },
         ),
+        search_text=f"Venue {fsq_place_id} dinner date",
+        card_payload={
+            "version": 1,
+            "plan_title": f"Venue {fsq_place_id}",
+            "plan_hook": "A single-stop dinner date.",
+            "plan_time_iso": "2026-04-25T19:30:00+10:00",
+            "search_text": f"Venue {fsq_place_id} dinner date",
+            "stops": [],
+            "legs": [],
+            "feasibility": {},
+        },
         verification={"status": "verified"},
         generated_at_utc=datetime(2026, 4, 18, 10, 0, tzinfo=UTC),
         model="anthropic/test-model",

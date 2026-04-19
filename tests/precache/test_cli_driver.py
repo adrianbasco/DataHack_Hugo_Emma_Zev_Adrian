@@ -96,6 +96,9 @@ class _FakePlanner:
                 "duration_hours": 1.5,
                 "description": "Coffee then a stroll.",
             },
+            plan_title="Coffee and dessert",
+            plan_hook="A quick test plan.",
+            plan_time_iso="2026-04-25T19:30:00+10:00",
             stops=[
                 {
                     "kind": "venue",
@@ -116,6 +119,17 @@ class _FakePlanner:
                     "name": f"Dessert {self.calls}",
                 },
             ],
+            search_text="Coffee and dessert around the CBD.",
+            card_payload={
+                "version": 1,
+                "plan_title": "Coffee and dessert",
+                "plan_hook": "A quick test plan.",
+                "plan_time_iso": "2026-04-25T19:30:00+10:00",
+                "search_text": "Coffee and dessert around the CBD.",
+                "stops": [],
+                "legs": [],
+                "feasibility": {},
+            },
             verification={
                 "status": "verified",
                 "feasibility": {
