@@ -9,16 +9,36 @@ import {
   SurfaceCard,
   palette,
 } from "../../components/ui";
+import { RestaurantBookingStatusValue } from "../../lib/types";
 
-const terminalStatuses = new Set(["confirmed", "declined", "no_answer", "failed", "unknown"]);
+const terminalStatuses = new Set<RestaurantBookingStatusValue>([
+  "confirmed",
+  "declined",
+  "no_answer",
+  "needs_human_follow_up",
+  "failed",
+  "unknown",
+]);
 
 export default function BookingStatusScreen() {
   const router = useRouter();
   const { status, callId } = useLocalSearchParams<{ status?: string; callId?: string }>();
-  const [currentStatus, setCurrentStatus] = useState(status || "queued");
+  const initialStatus =
+    status === "queued" ||
+    status === "in_progress" ||
+    status === "confirmed" ||
+    status === "declined" ||
+    status === "no_answer" ||
+    status === "needs_human_follow_up" ||
+    status === "failed" ||
+    status === "unknown"
+      ? status
+      : "queued";
+  const [currentStatus, setCurrentStatus] = useState<RestaurantBookingStatusValue>(initialStatus);
   const [summary, setSummary] = useState<string | undefined>();
   const [errorMessage, setErrorMessage] = useState<string | undefined>();
   const [loading, setLoading] = useState(Boolean(callId));
+  const [refreshNonce, setRefreshNonce] = useState(0);
 
   useEffect(() => {
     if (!callId || terminalStatuses.has(currentStatus)) {
@@ -34,6 +54,7 @@ export default function BookingStatusScreen() {
         return;
       }
       try {
+        setLoading(true);
         const result = await fetchRestaurantBookingStatus(callId);
         if (!active) {
           return;
@@ -69,7 +90,7 @@ export default function BookingStatusScreen() {
         clearTimeout(timer);
       }
     };
-  }, [callId, currentStatus]);
+  }, [callId, currentStatus, refreshNonce]);
 
   const copy = useMemo(() => getCopy(currentStatus), [currentStatus]);
 
@@ -90,10 +111,21 @@ export default function BookingStatusScreen() {
             <ActionButton label="View my saved dates" onPress={() => router.push("/saved")} />
           ) : null}
 
-          {currentStatus === "declined" || currentStatus === "failed" ? (
+          {currentStatus === "declined" ||
+          currentStatus === "failed" ||
+          currentStatus === "needs_human_follow_up" ? (
             <ActionButton
               label="Return to planner"
               onPress={() => router.push("/")}
+            />
+          ) : null}
+
+          {callId ? (
+            <ActionButton
+              label="Refresh status"
+              variant="secondary"
+              onPress={() => setRefreshNonce((value) => value + 1)}
+              disabled={loading}
             />
           ) : null}
 
@@ -108,7 +140,7 @@ export default function BookingStatusScreen() {
   );
 }
 
-function getCopy(status: string) {
+function getCopy(status: RestaurantBookingStatusValue) {
   switch (status) {
     case "confirmed":
       return {
@@ -126,6 +158,13 @@ function getCopy(status: string) {
       return {
         title: "No answer yet",
         description: "The booking service could not reach the venue successfully.",
+        tone: "default" as const,
+      };
+    case "needs_human_follow_up":
+      return {
+        title: "Needs human follow-up",
+        description:
+          "The call completed, but the provider flagged the result for manual follow-up instead of claiming the table was secured.",
         tone: "default" as const,
       };
     case "failed":

@@ -20,6 +20,7 @@ if str(REPO_ROOT) not in sys.path:
 from back_end.clients.settings import (  # noqa: E402
     BlandAIConfigurationError,
     BlandAISettings,
+    bland_ai_booking_phone_number_from_env,
 )
 from back_end.services.booking import (  # noqa: E402
     BookingRequestBuilder,
@@ -137,7 +138,10 @@ async def async_main(argv: Sequence[str] | None = None) -> int:
 async def _start(args: argparse.Namespace) -> int:
     request = build_booking_request(args)
     if not args.place_call:
-        settings = BlandAISettings(api_key="dry-run-not-used")
+        settings = BlandAISettings(
+            api_key="dry-run-not-used",
+            booking_phone_number=bland_ai_booking_phone_number_from_env(),
+        )
         payload = build_call_payload(request, settings)
         logger.info(
             "Dry run only. Add --place-call to queue a real Bland AI call to %s.",

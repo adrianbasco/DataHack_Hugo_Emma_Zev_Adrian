@@ -3,11 +3,34 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { palette } from "../components/ui";
 import { useEffect } from "react";
 import { Platform } from "react-native";
+import { reportClientError } from "../lib/clientErrors";
 
 const queryClient = new QueryClient();
 
+type ErrorUtilsShape = {
+  getGlobalHandler?: () => (error: Error, isFatal?: boolean) => void;
+  setGlobalHandler?: (handler: (error: Error, isFatal?: boolean) => void) => void;
+};
+
+const nativeErrorUtils = (globalThis as { ErrorUtils?: ErrorUtilsShape }).ErrorUtils;
+
 export default function RootLayout() {
-    // inside your RootLayout component
+  useEffect(() => {
+    if (!nativeErrorUtils?.setGlobalHandler) {
+      return;
+    }
+
+    const previousHandler = nativeErrorUtils.getGlobalHandler?.();
+    nativeErrorUtils.setGlobalHandler((error, isFatal) => {
+      reportClientError({
+        source: "global_error_handler",
+        error,
+        context: { isFatal: Boolean(isFatal) },
+      });
+      previousHandler?.(error, isFatal);
+    });
+  }, []);
+
   useEffect(() => {
     if (Platform.OS !== "web") return;
 

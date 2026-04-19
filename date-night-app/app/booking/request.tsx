@@ -1,14 +1,19 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ActivityIndicator, StyleSheet, Text, TextInput, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { createRestaurantBooking } from "../../lib/api";
+import {
+  createRestaurantBooking,
+  fetchPlan,
+  previewRestaurantBooking,
+} from "../../lib/api";
 import {
   buildLocalIsoDateTime,
   formatDateInput,
   isoToLocalInputs,
 } from "../../lib/datetime";
+import { mergePlanWithCachedContext } from "../../lib/planContext";
 import { getPlanById } from "../../lib/storage";
-import { Plan } from "../../lib/types";
+import { Plan, RestaurantBookingPreview, RestaurantBookingRequest } from "../../lib/types";
 import {
   ActionButton,
   Eyebrow,
@@ -22,8 +27,12 @@ export default function BookingRequestScreen() {
   const { planId } = useLocalSearchParams<{ planId?: string }>();
   const [plan, setPlan] = useState<Plan | null>(null);
   const [loadingPlan, setLoadingPlan] = useState(true);
+  const [previewing, setPreviewing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [planWarning, setPlanWarning] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
+  const [preview, setPreview] = useState<RestaurantBookingPreview | undefined>();
+  const [previewSignature, setPreviewSignature] = useState<string | undefined>();
 
   const today = useMemo(() => new Date(), []);
   const initialDate = formatDateInput(today);
@@ -52,26 +61,56 @@ export default function BookingRequestScreen() {
         return;
       }
 
-      const foundPlan = await getPlanById(planId);
+      const cachedPlan = await getPlanById(planId);
       if (!active) {
         return;
       }
 
-      setPlan(foundPlan ?? null);
-      setRestaurantName(foundPlan?.bookingContext?.restaurantName || "");
-      setRestaurantPhoneNumber(foundPlan?.bookingContext?.restaurantPhoneNumber || "");
-      setRestaurantAddress(foundPlan?.bookingContext?.restaurantAddress || "");
-      setPartySize(String(foundPlan?.bookingContext?.partySize || 2));
-      if (foundPlan?.bookingContext?.suggestedArrivalTimeIso) {
-        try {
-          const suggested = isoToLocalInputs(foundPlan.bookingContext.suggestedArrivalTimeIso);
-          setArrivalDate(suggested.date);
-          setArrivalTime(suggested.time);
-        } catch (parseError) {
-          console.error("Failed to prefill suggested booking time from plan context.", parseError);
+      try {
+        const livePlan = await fetchPlan(planId);
+        if (!active) {
+          return;
         }
+        const mergedPlan = mergePlanWithCachedContext(livePlan, cachedPlan);
+        setPlanWarning(undefined);
+        setPlan(mergedPlan);
+        applyPlanDefaults(mergedPlan);
+        setLoadingPlan(false);
+        return;
+      } catch (liveError) {
+        console.error("Failed to load live booking context for the selected plan.", liveError);
+      }
+
+      if (cachedPlan) {
+        setPlanWarning(
+          "Live booking context could not be loaded. Using cached plan data, so recheck venue details before placing a live call."
+        );
+        setPlan(cachedPlan);
+        applyPlanDefaults(cachedPlan);
+      } else {
+        setPlanWarning(
+          "This plan could not be reloaded from the backend. Fill the booking details manually before requesting a preview."
+        );
+        setPlan(null);
       }
       setLoadingPlan(false);
+    }
+
+    function applyPlanDefaults(sourcePlan: Plan) {
+      setRestaurantName(sourcePlan.bookingContext?.restaurantName || "");
+      setRestaurantPhoneNumber(sourcePlan.bookingContext?.restaurantPhoneNumber || "");
+      setRestaurantAddress(sourcePlan.bookingContext?.restaurantAddress || "");
+      setPartySize(String(sourcePlan.bookingContext?.partySize || 2));
+      if (!sourcePlan.bookingContext?.suggestedArrivalTimeIso) {
+        return;
+      }
+      try {
+        const suggested = isoToLocalInputs(sourcePlan.bookingContext.suggestedArrivalTimeIso);
+        setArrivalDate(suggested.date);
+        setArrivalTime(suggested.time);
+      } catch (parseError) {
+        console.error("Failed to prefill suggested booking time from plan context.", parseError);
+      }
     }
 
     void hydratePlan();
@@ -81,50 +120,143 @@ export default function BookingRequestScreen() {
     };
   }, [planId]);
 
-  async function handleSubmit() {
+  const currentDraftSignature = useMemo(() => {
+    try {
+      return serializeBookingRequest(buildBookingRequestPayload());
+    } catch {
+      return undefined;
+    }
+  }, [
+    acceptableWindow,
+    accessibilityConstraints,
+    arrivalDate,
+    arrivalTime,
+    bookingName,
+    customerPhoneNumber,
+    dietaryConstraints,
+    notes,
+    partySize,
+    plan?.id,
+    planId,
+    restaurantAddress,
+    restaurantName,
+    restaurantPhoneNumber,
+    specialOccasion,
+  ]);
+
+  const previewIsCurrent =
+    preview !== undefined &&
+    previewSignature !== undefined &&
+    previewSignature === currentDraftSignature;
+
+  function buildBookingRequestPayload(): RestaurantBookingRequest {
     const trimmedRestaurantName = restaurantName.trim();
     const trimmedRestaurantPhone = restaurantPhoneNumber.trim();
+    const trimmedRestaurantAddress = restaurantAddress.trim();
     const trimmedBookingName = bookingName.trim();
     const trimmedCustomerPhone = customerPhoneNumber.trim();
     const parsedPartySize = Number(partySize);
     const parsedWindow = acceptableWindow.trim() ? Number(acceptableWindow) : undefined;
 
     if (!trimmedRestaurantName) {
-      setError("Restaurant name is required.");
-      return;
+      throw new Error("Restaurant name is required.");
     }
     if (!trimmedBookingName) {
-      setError("Booking name is required.");
-      return;
+      throw new Error("Booking name is required.");
     }
-    if (!isE164PhoneNumber(trimmedRestaurantPhone)) {
-      setError("Restaurant phone number must use E.164 format, for example +61290000000.");
-      return;
+    if (trimmedRestaurantPhone && !isE164PhoneNumber(trimmedRestaurantPhone)) {
+      throw new Error(
+        "Restaurant phone number must use E.164 format when provided, for example +61290000000."
+      );
     }
     if (trimmedCustomerPhone && !isE164PhoneNumber(trimmedCustomerPhone)) {
-      setError("Customer phone number must use E.164 format when provided.");
-      return;
+      throw new Error("Customer phone number must use E.164 format when provided.");
     }
     if (!Number.isFinite(parsedPartySize) || parsedPartySize <= 0) {
-      setError("Party size must be a positive whole number.");
-      return;
+      throw new Error("Party size must be a positive whole number.");
     }
     if (
       parsedWindow !== undefined &&
       (!Number.isFinite(parsedWindow) || parsedWindow < 0)
     ) {
-      setError("Acceptable time window must be zero or a positive number of minutes.");
+      throw new Error("Acceptable time window must be zero or a positive number of minutes.");
+    }
+
+    const arrivalTimeIso = buildLocalIsoDateTime(arrivalDate, arrivalTime);
+
+    return {
+      restaurantName: trimmedRestaurantName,
+      restaurantPhoneNumber: trimmedRestaurantPhone || undefined,
+      restaurantAddress: trimmedRestaurantAddress || undefined,
+      arrivalTimeIso,
+      partySize: parsedPartySize,
+      bookingName: trimmedBookingName,
+      customerPhoneNumber: trimmedCustomerPhone || undefined,
+      dietaryConstraints: dietaryConstraints.trim() || undefined,
+      accessibilityConstraints: accessibilityConstraints.trim() || undefined,
+      specialOccasion: specialOccasion.trim() || undefined,
+      notes: notes.trim() || undefined,
+      acceptableTimeWindowMinutes: parsedWindow,
+      planId: plan?.id || planId || undefined,
+    };
+  }
+
+  async function handlePreview() {
+    let request: RestaurantBookingRequest;
+    try {
+      request = buildBookingRequestPayload();
+    } catch (validationError) {
+      setPreview(undefined);
+      setPreviewSignature(undefined);
+      setError(
+        validationError instanceof Error
+          ? validationError.message
+          : "Booking details were not valid."
+      );
       return;
     }
 
-    let arrivalTimeIso: string;
     try {
-      arrivalTimeIso = buildLocalIsoDateTime(arrivalDate, arrivalTime);
+      setPreviewing(true);
+      setError(undefined);
+      const result = await previewRestaurantBooking(request);
+      setPreview(result);
+      setPreviewSignature(serializeBookingRequest(request));
+    } catch (previewError) {
+      setPreview(undefined);
+      setPreviewSignature(undefined);
+      setError(
+        previewError instanceof Error
+          ? previewError.message
+          : "Booking preview could not be generated."
+      );
+    } finally {
+      setPreviewing(false);
+    }
+  }
+
+  async function handleSubmit() {
+    let request: RestaurantBookingRequest;
+    try {
+      request = buildBookingRequestPayload();
     } catch (validationError) {
       setError(
         validationError instanceof Error
           ? validationError.message
-          : "Arrival date and time were not valid."
+          : "Booking details were not valid."
+      );
+      return;
+    }
+
+    if (!previewIsCurrent) {
+      await handlePreview();
+      return;
+    }
+
+    if (!preview?.liveCallEnabled) {
+      setError(
+        preview?.liveCallDisabledReason ||
+          "Live Bland AI booking calls are not configured for this backend."
       );
       return;
     }
@@ -133,21 +265,7 @@ export default function BookingRequestScreen() {
       setSubmitting(true);
       setError(undefined);
 
-      const job = await createRestaurantBooking({
-        restaurantName: trimmedRestaurantName,
-        restaurantPhoneNumber: trimmedRestaurantPhone,
-        restaurantAddress: restaurantAddress || undefined,
-        arrivalTimeIso,
-        partySize: parsedPartySize,
-        bookingName: trimmedBookingName,
-        customerPhoneNumber: trimmedCustomerPhone || undefined,
-        dietaryConstraints: dietaryConstraints || undefined,
-        accessibilityConstraints: accessibilityConstraints || undefined,
-        specialOccasion: specialOccasion || undefined,
-        notes: notes || undefined,
-        acceptableTimeWindowMinutes: parsedWindow,
-        planId: plan?.id || planId || undefined,
-      });
+      const job = await createRestaurantBooking(request);
 
       router.replace({
         pathname: "/booking/[status]",
@@ -182,9 +300,9 @@ export default function BookingRequestScreen() {
     <ScreenShell scroll>
       <View style={styles.hero}>
         <Eyebrow tone="warm">Restaurant booking</Eyebrow>
-        <Text style={styles.title}>Submit a restaurant booking request.</Text>
+        <Text style={styles.title}>Preview the booking call before placing it.</Text>
         <Text style={styles.subtitle}>
-          This screen is shaped around the backend booking service, so once the endpoint is live it can pass a real reservation brief through directly.
+          The app validates the reservation brief, calls the backend preview endpoint, and only then lets you place a real Bland AI booking call.
         </Text>
       </View>
 
@@ -193,6 +311,13 @@ export default function BookingRequestScreen() {
           <Text style={styles.planLabel}>From plan</Text>
           <Text style={styles.planTitle}>{plan.title}</Text>
           <Text style={styles.planText}>{plan.hook}</Text>
+        </SurfaceCard>
+      ) : null}
+
+      {planWarning ? (
+        <SurfaceCard style={styles.warningCard}>
+          <Text style={styles.warningTitle}>Booking context warning</Text>
+          <Text style={styles.warningText}>{planWarning}</Text>
         </SurfaceCard>
       ) : null}
 
@@ -219,7 +344,7 @@ export default function BookingRequestScreen() {
             style={styles.input}
             value={restaurantPhoneNumber}
             onChangeText={setRestaurantPhoneNumber}
-            placeholder="+61290000000"
+            placeholder="Optional context, for example +61290000000"
             placeholderTextColor={palette.textMuted}
           />
         </Field>
@@ -343,11 +468,65 @@ export default function BookingRequestScreen() {
           />
         </Field>
 
-        <ActionButton
-          label={submitting ? "Submitting..." : "Submit booking request"}
-          onPress={handleSubmit}
-          disabled={submitting}
-        />
+        {preview ? (
+          <SurfaceCard style={styles.previewCard}>
+            <Text style={styles.previewTitle}>
+              {previewIsCurrent ? "Call preview ready" : "Call preview is out of date"}
+            </Text>
+            <Text style={styles.previewText}>
+              {previewIsCurrent
+                ? "Review the exact booking brief below before placing the live call."
+                : "The form changed after this preview was generated. Refresh the preview before placing a live call."}
+            </Text>
+            <Text style={styles.previewLabel}>Outbound number</Text>
+            <Text style={styles.previewValue}>{preview.callDescription.phoneNumber}</Text>
+            {preview.callDescription.firstSentence ? (
+              <>
+                <Text style={styles.previewLabel}>Opening line</Text>
+                <Text style={styles.previewText}>{preview.callDescription.firstSentence}</Text>
+              </>
+            ) : null}
+            {preview.callDescription.task ? (
+              <>
+                <Text style={styles.previewLabel}>Call task</Text>
+                <Text style={styles.previewTask}>{preview.callDescription.task}</Text>
+              </>
+            ) : null}
+            {!preview.liveCallEnabled && preview.liveCallDisabledReason ? (
+              <Text style={styles.errorText}>{preview.liveCallDisabledReason}</Text>
+            ) : null}
+          </SurfaceCard>
+        ) : null}
+
+        <View style={styles.actionGroup}>
+          <ActionButton
+            label={
+              previewing
+                ? "Generating preview..."
+                : submitting
+                  ? "Placing booking call..."
+                  : previewIsCurrent
+                    ? preview?.liveCallEnabled
+                      ? "Place booking call"
+                      : "Live booking unavailable"
+                    : "Preview booking call"
+            }
+            onPress={handleSubmit}
+            disabled={
+              previewing ||
+              submitting ||
+              (previewIsCurrent && preview !== undefined && !preview.liveCallEnabled)
+            }
+          />
+          {preview ? (
+            <ActionButton
+              label="Refresh preview"
+              variant="secondary"
+              onPress={handlePreview}
+              disabled={previewing || submitting}
+            />
+          ) : null}
+        </View>
       </SurfaceCard>
     </ScreenShell>
   );
@@ -370,6 +549,10 @@ function Field({
 
 function isE164PhoneNumber(value: string) {
   return /^\+[1-9]\d{6,14}$/.test(value);
+}
+
+function serializeBookingRequest(request: RestaurantBookingRequest) {
+  return JSON.stringify(request);
 }
 
 const styles = StyleSheet.create({
@@ -422,8 +605,16 @@ const styles = StyleSheet.create({
   errorCard: {
     gap: 6,
   },
+  warningCard: {
+    gap: 6,
+  },
   errorTitle: {
     color: "#fecdd3",
+    fontSize: 18,
+    fontWeight: "800",
+  },
+  warningTitle: {
+    color: palette.accentWarm,
     fontSize: 18,
     fontWeight: "800",
   },
@@ -431,13 +622,48 @@ const styles = StyleSheet.create({
     color: palette.textMuted,
     lineHeight: 21,
   },
+  warningText: {
+    color: palette.textSoft,
+    lineHeight: 21,
+  },
   formCard: {
     gap: 14,
+  },
+  previewCard: {
+    gap: 8,
+  },
+  previewTitle: {
+    color: palette.text,
+    fontSize: 18,
+    fontWeight: "800",
+  },
+  previewLabel: {
+    color: palette.textSoft,
+    fontSize: 13,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+  },
+  previewValue: {
+    color: palette.text,
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  previewText: {
+    color: palette.textSoft,
+    lineHeight: 21,
+  },
+  previewTask: {
+    color: palette.text,
+    lineHeight: 22,
   },
   row: {
     flexDirection: "row",
     gap: 12,
     flexWrap: "wrap",
+  },
+  actionGroup: {
+    gap: 12,
   },
   field: {
     flex: 1,

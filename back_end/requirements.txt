@@ -21,3 +21,4 @@ pyyaml
 crawl4ai
 fastapi
 uvicorn
+pytest

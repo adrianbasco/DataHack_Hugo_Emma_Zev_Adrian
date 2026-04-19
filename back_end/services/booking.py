@@ -38,6 +38,7 @@ class BookingStatus(str, Enum):
     CONFIRMED = "confirmed"
     DECLINED = "declined"
     NO_ANSWER = "no_answer"
+    NEEDS_HUMAN_FOLLOW_UP = "needs_human_follow_up"
     FAILED = "failed"
     UNKNOWN = "unknown"
 
@@ -47,10 +48,10 @@ class RestaurantBookingRequest:
     """Inputs required to ask a restaurant for a table booking."""
 
     restaurant_name: str
-    restaurant_phone_number: str
     arrival_time: datetime
     party_size: int
     booking_name: str
+    restaurant_phone_number: str | None = None
     customer_phone_number: str | None = None
     restaurant_address: str | None = None
     dietary_constraints: str | None = None
@@ -69,7 +70,7 @@ class RestaurantBookingJob:
     status: BookingStatus
     provider: str
     restaurant_name: str
-    restaurant_phone_number: str
+    restaurant_phone_number: str | None
     arrival_time: datetime
     party_size: int
     request_data: dict[str, Any]
@@ -97,6 +98,10 @@ class BookingRequestBuilder:
 
     def build(self, request: RestaurantBookingRequest) -> BlandCallRequest:
         _validate_booking_request(request)
+        _validate_australian_phone_number(
+            self._settings.booking_phone_number,
+            "BLAND_AI_BOOKING_PHONE_NUMBER",
+        )
         request_data = _booking_request_data(request)
         task = _booking_task(request, request_data)
         first_sentence = (
@@ -104,7 +109,7 @@ class BookingRequestBuilder:
             f"a table at {request.restaurant_name}."
         )
         return BlandCallRequest(
-            phone_number=request.restaurant_phone_number,
+            phone_number=self._settings.booking_phone_number,
             task=task,
             first_sentence=first_sentence,
             voice=self._settings.default_voice,
@@ -119,6 +124,7 @@ class BookingRequestBuilder:
             metadata={
                 "purpose": "restaurant_booking",
                 "provider": "bland_ai",
+                "configured_call_target": self._settings.booking_phone_number,
                 **({"plan_id": request.plan_id} if request.plan_id else {}),
             },
             dispositions=BOOKING_DISPOSITIONS,
@@ -186,14 +192,26 @@ class BookingService:
 
         details = await self._client.get_call_details(call_id)
         status = _map_bland_status(details)
+        error_message = _normalized_status_error_message(details, status)
         if status in {BookingStatus.FAILED, BookingStatus.UNKNOWN}:
             logger.error(
-                "Bland AI booking call_id=%s returned status=%s queue_status=%s "
-                "error=%r.",
+                "Bland AI booking call_id=%s returned normalized_status=%s provider_status=%s "
+                "queue_status=%s disposition=%s error=%r.",
                 details.call_id,
+                status.value,
                 details.status,
                 details.queue_status,
-                details.error_message,
+                details.disposition_tag,
+                error_message,
+            )
+        elif status is BookingStatus.NEEDS_HUMAN_FOLLOW_UP:
+            logger.warning(
+                "Bland AI booking call_id=%s requires human follow-up. "
+                "provider_status=%s disposition=%s summary=%r",
+                details.call_id,
+                details.status,
+                details.disposition_tag,
+                details.summary,
             )
         return RestaurantBookingCallStatus(
             call_id=details.call_id,
@@ -202,7 +220,7 @@ class BookingService:
             queue_status=details.queue_status,
             answered_by=details.answered_by,
             summary=details.summary,
-            error_message=details.error_message,
+            error_message=error_message,
             raw_details=details,
         )
 
@@ -216,10 +234,11 @@ def _validate_booking_request(request: RestaurantBookingRequest) -> None:
         raise BookingValidationError("party_size must be positive.")
     if request.arrival_time.tzinfo is None or request.arrival_time.utcoffset() is None:
         raise BookingValidationError("arrival_time must be timezone-aware.")
-    _validate_australian_phone_number(
-        request.restaurant_phone_number,
-        "restaurant_phone_number",
-    )
+    if request.restaurant_phone_number is not None:
+        _validate_australian_phone_number(
+            request.restaurant_phone_number,
+            "restaurant_phone_number",
+        )
     if (
         request.acceptable_time_window_minutes is not None
         and request.acceptable_time_window_minutes < 0
@@ -237,13 +256,13 @@ def _validate_booking_request(request: RestaurantBookingRequest) -> None:
 def _booking_request_data(request: RestaurantBookingRequest) -> dict[str, Any]:
     data = {
         "restaurant_name": request.restaurant_name.strip(),
-        "restaurant_phone_number": request.restaurant_phone_number,
         "booking_name": request.booking_name.strip(),
         "party_size": request.party_size,
         "arrival_time_iso": request.arrival_time.isoformat(),
         "arrival_time_local": _format_local_datetime(request.arrival_time),
     }
     optional_fields = {
+        "restaurant_phone_number": request.restaurant_phone_number,
         "customer_phone_number": request.customer_phone_number,
         "restaurant_address": request.restaurant_address,
         "dietary_constraints": request.dietary_constraints,
@@ -327,6 +346,8 @@ def _map_bland_status(details: BlandCallDetails) -> BookingStatus:
 
     if disposition == "booking_confirmed":
         return BookingStatus.CONFIRMED
+    if disposition == "needs_human_follow_up":
+        return BookingStatus.NEEDS_HUMAN_FOLLOW_UP
     if disposition in {"booking_declined", "restaurant_unavailable"}:
         return BookingStatus.DECLINED
     if disposition == "no_answer" or provider_status in {"no-answer", "busy"}:
@@ -349,6 +370,19 @@ def _map_bland_status(details: BlandCallDetails) -> BookingStatus:
         )
         return BookingStatus.UNKNOWN
     return BookingStatus.UNKNOWN
+
+
+def _normalized_status_error_message(
+    details: BlandCallDetails,
+    status: BookingStatus,
+) -> str | None:
+    if details.error_message:
+        return details.error_message
+    if status is BookingStatus.FAILED:
+        return "Bland AI reported a failed booking call."
+    if status is BookingStatus.UNKNOWN:
+        return "Bland AI returned an unexpected booking status."
+    return None
 
 
 def _format_local_datetime(value: datetime) -> str:

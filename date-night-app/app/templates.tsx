@@ -76,7 +76,7 @@ export default function TemplatesScreen() {
 
       {warning ? (
         <SurfaceCard style={styles.infoCard}>
-          <Text style={styles.infoTitle}>Bundled template fallback</Text>
+          <Text style={styles.infoTitle}>Template API note</Text>
           <Text style={styles.infoText}>{warning}</Text>
         </SurfaceCard>
       ) : null}

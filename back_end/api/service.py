@@ -14,12 +14,21 @@ from urllib.parse import urljoin
 
 import pandas as pd
 
-from back_end.api.models import PlanPayload, PlanStop, TransportLeg
+from back_end.api.models import (
+    BookingContextPayload,
+    DateTemplatePayload,
+    DateTemplateStopPayload,
+    PlanPayload,
+    PlanStop,
+    TransportLeg,
+)
 from back_end.precache.asset_sync import DEFAULT_FRONTEND_API_OUTPUT_PATH, DEFAULT_FRONTEND_IMAGES_DIR
 from back_end.query.location import TypedLocationResolver, _haversine_km
 from back_end.catalog.repository import PlacesRepository
 from back_end.query.settings import load_query_settings
 from back_end.query.errors import LocationAmbiguityError, LocationResolutionError
+from back_end.rag.retriever import RagRetrieverError, load_date_templates
+from back_end.rag.settings import load_rag_settings
 
 logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -35,6 +44,7 @@ _TRANSPORT_ALIASES = {
     "drive": "DRIVE",
 }
 _STATIC_ROUTE = "/static/precache-images"
+_E164_PHONE_RE = re.compile(r"^\+[1-9]\d{6,14}$")
 
 
 class FrontendApiError(RuntimeError):
@@ -71,6 +81,12 @@ class _Snapshot:
     vibe_counts: tuple[tuple[str, int], ...]
 
 
+@dataclass(frozen=True)
+class _TemplateSnapshot:
+    source_mtime_ns: int
+    templates: tuple[DateTemplatePayload, ...]
+
+
 class FrontendPlanService:
     """Serve local precache plans with refresh-on-change behavior."""
 
@@ -79,12 +95,21 @@ class FrontendPlanService:
         *,
         plans_api_path: Path | str = DEFAULT_FRONTEND_API_OUTPUT_PATH,
         assets_dir: Path | str = DEFAULT_FRONTEND_IMAGES_DIR,
+        date_templates_path: Path | str | None = None,
         location_resolver: TypedLocationResolver | None = None,
     ) -> None:
         self._plans_api_path = _repo_path(plans_api_path)
         self._assets_dir = _repo_path(assets_dir)
+        resolved_templates_path = (
+            load_rag_settings().date_templates_path
+            if date_templates_path is None
+            else date_templates_path
+        )
+        self._date_templates_path = _repo_path(resolved_templates_path)
         self._lock = asyncio.Lock()
+        self._templates_lock = asyncio.Lock()
         self._snapshot: _Snapshot | None = None
+        self._template_snapshot: _TemplateSnapshot | None = None
         if location_resolver is None:
             repository = PlacesRepository(load_query_settings())
             location_resolver = TypedLocationResolver(repository)
@@ -97,6 +122,10 @@ class FrontendPlanService:
     @property
     def assets_dir(self) -> Path:
         return self._assets_dir
+
+    @property
+    def date_templates_path(self) -> Path:
+        return self._date_templates_path
 
     async def health(self) -> dict[str, Any]:
         snapshot = await self._maybe_snapshot()
@@ -115,6 +144,10 @@ class FrontendPlanService:
                 "plansApiExists": self._plans_api_path.exists(),
             },
         }
+
+    async def list_templates(self) -> list[DateTemplatePayload]:
+        snapshot = await self._require_template_snapshot()
+        return list(snapshot.templates)
 
     async def metadata(self) -> dict[str, Any]:
         snapshot = await self._require_snapshot()
@@ -136,7 +169,12 @@ class FrontendPlanService:
         record = snapshot.by_plan_id.get(plan_id)
         if record is None:
             raise KeyError(plan_id)
-        return self._to_plan_payload(record=record, public_base_url=public_base_url, requested_budget=None)
+        return self._to_plan_payload(
+            record=record,
+            public_base_url=public_base_url,
+            requested_budget=None,
+            requested_party_size=None,
+        )
 
     async def list_plans(
         self,
@@ -158,7 +196,12 @@ class FrontendPlanService:
             records = [record for record in records if tokens & record.vibe_tokens]
         records = records[:limit]
         return [
-            self._to_plan_payload(record=record, public_base_url=public_base_url, requested_budget=None)
+            self._to_plan_payload(
+                record=record,
+                public_base_url=public_base_url,
+                requested_budget=None,
+                requested_party_size=None,
+            )
             for record in records
         ]
 
@@ -177,6 +220,7 @@ class FrontendPlanService:
         requested_hour = _parse_start_hour(request.get("startTime"))
         requested_duration_minutes = int(request["durationMinutes"])
         requested_budget = _optional_text(request.get("budget"))
+        requested_party_size = _optional_int(request.get("partySize"))
         limit = int(request["limit"])
 
         if requested_budget:
@@ -228,6 +272,7 @@ class FrontendPlanService:
                     record=record,
                     public_base_url=public_base_url,
                     requested_budget=requested_budget,
+                    requested_party_size=requested_party_size,
                 )
                 for record in returned_records
             ],
@@ -262,6 +307,28 @@ class FrontendPlanService:
                 return cached
             snapshot = await asyncio.to_thread(self._load_snapshot, stat_result.st_mtime_ns)
             self._snapshot = snapshot
+            return snapshot
+
+    async def _require_template_snapshot(self) -> _TemplateSnapshot:
+        if not self._date_templates_path.exists():
+            logger.error("Date templates YAML is missing at %s.", self._date_templates_path)
+            raise FrontendApiError(
+                "Date templates YAML is missing. Restore config/date_templates.yaml."
+            )
+        stat_result = self._date_templates_path.stat()
+        cached = self._template_snapshot
+        if cached is not None and cached.source_mtime_ns == stat_result.st_mtime_ns:
+            return cached
+        async with self._templates_lock:
+            cached = self._template_snapshot
+            stat_result = self._date_templates_path.stat()
+            if cached is not None and cached.source_mtime_ns == stat_result.st_mtime_ns:
+                return cached
+            snapshot = await asyncio.to_thread(
+                self._load_template_snapshot,
+                stat_result.st_mtime_ns,
+            )
+            self._template_snapshot = snapshot
             return snapshot
 
     async def _resolve_location(self, *, location_text: str, warnings: list[str]) -> Any:
@@ -332,19 +399,59 @@ class FrontendPlanService:
             vibe_counts=tuple(sorted(vibe_counts.items())),
         )
 
+    def _load_template_snapshot(self, source_mtime_ns: int) -> _TemplateSnapshot:
+        try:
+            raw_templates = load_date_templates(self._date_templates_path)
+        except (FileNotFoundError, RagRetrieverError) as exc:
+            logger.error(
+                "Failed to load date templates from %s: %s",
+                self._date_templates_path,
+                exc,
+            )
+            raise FrontendApiError(
+                f"Date templates could not be loaded from {self._date_templates_path}."
+            ) from exc
+
+        templates: list[DateTemplatePayload] = []
+        for index, raw_template in enumerate(raw_templates):
+            if not isinstance(raw_template, dict):
+                logger.error("Template row %s is not a mapping and will be skipped.", index)
+                continue
+            try:
+                templates.append(_template_payload_from_mapping(raw_template))
+            except FrontendApiError as exc:
+                template_id = _optional_text(raw_template.get("id")) or f"index={index}"
+                logger.error("Template %s is invalid: %s", template_id, exc)
+                raise
+
+        if not templates:
+            logger.error("No valid templates were loaded from %s.", self._date_templates_path)
+            raise FrontendApiError("Date templates YAML did not contain any valid templates.")
+
+        return _TemplateSnapshot(
+            source_mtime_ns=source_mtime_ns,
+            templates=tuple(templates),
+        )
+
     def _to_plan_payload(
         self,
         *,
         record: _ApiPlanRecord,
         public_base_url: str,
         requested_budget: str | None,
+        requested_party_size: int | None,
     ) -> PlanPayload:
         payload = record.payload
         stops_data = payload.get("stops")
         if not isinstance(stops_data, list):
             raise FrontendApiError(f"Plan {record.plan_id} is missing stop data.")
         legs = payload.get("legs") if isinstance(payload.get("legs"), list) else []
+        plan_time_iso = _optional_text(payload.get("plan_time_iso"))
         stop_times = _estimate_stop_times(
+            plan_time_iso=plan_time_iso,
+            stop_count=len(stops_data),
+        )
+        stop_times_iso = _estimate_stop_times_iso(
             plan_time_iso=_optional_text(payload.get("plan_time_iso")),
             stop_count=len(stops_data),
         )
@@ -361,17 +468,38 @@ class FrontendPlanService:
                     id=_optional_text(stop.get("fsq_place_id"))
                     or _optional_text(stop.get("google_place_id"))
                     or f"{record.plan_id}-stop-{index+1}",
+                    kind=_stop_kind(stop),
+                    stopType=_optional_text(stop.get("stop_type")) or "venue",
                     name=_required_text(stop.get("name"), field_name="stop.name"),
-                    description=_optional_text(stop.get("llm_description")),
+                    description=_optional_text(stop.get("llm_description")) or "",
+                    whyItFits=_optional_text(stop.get("why_it_fits")),
                     time=None if index >= len(stop_times) else stop_times[index],
                     transport=transport_text,
                     mapsUrl=_optional_text(stop.get("google_maps_uri")),
+                    address=_optional_text(stop.get("address")),
+                    phoneNumber=_extract_booking_phone_number(
+                        stop,
+                        plan_id=record.plan_id,
+                        stop_index=index,
+                    ),
                 )
             )
+        booking_context = _build_booking_context(
+            plan_id=record.plan_id,
+            plan_time_iso=plan_time_iso,
+            stops_data=stops_data,
+            stop_times_iso=stop_times_iso,
+            requested_party_size=requested_party_size,
+        )
         return PlanPayload(
             id=record.plan_id,
             title=record.plan_title,
-            vibeLine=_format_vibe_line(payload.get("vibe")),
+            hook=_optional_text(payload.get("plan_hook")) or "A cached date plan.",
+            summary=_optional_text(payload.get("template_description"))
+            or _optional_text(payload.get("plan_hook")),
+            vibes=_string_list(payload.get("vibe")),
+            templateHint=_optional_text(payload.get("template_title")) or record.template_id,
+            templateId=record.template_id,
             heroImageUrl=_absolute_image_url(
                 relative_path=record.hero_image_relative_path,
                 public_base_url=public_base_url,
@@ -379,10 +507,12 @@ class FrontendPlanService:
             durationLabel=_format_duration_label(record.template_duration_hours, len(stops)),
             costBand=requested_budget or "Unspecified",
             weather=None,
-            summary=_optional_text(payload.get("template_description"))
-            or _optional_text(payload.get("plan_hook")),
+            mapsVerificationNeeded=_maps_verification_needed(payload.get("feasibility")),
+            constraintsConsidered=[],
             stops=stops,
             transportLegs=[_transport_leg_payload(leg) for leg in legs if isinstance(leg, dict)],
+            bookingContext=booking_context,
+            source="api",
         )
 
 
@@ -423,6 +553,54 @@ def _record_from_row(*, row_map: dict[str, Any], payload: dict[str, Any]) -> _Ap
         center_longitude=center_longitude,
         plan_hour_local=_plan_hour(_optional_text(payload.get("plan_time_iso"))),
         transport_mode=_optional_text(payload.get("transport_mode")),
+    )
+
+
+def _template_payload_from_mapping(raw_template: dict[str, Any]) -> DateTemplatePayload:
+    stops_raw = raw_template.get("stops")
+    if not isinstance(stops_raw, list):
+        raise FrontendApiError("template.stops must be a list.")
+
+    vibes = _string_list(raw_template.get("vibe"))
+    if not vibes:
+        raise FrontendApiError("template.vibe must contain at least one entry.")
+
+    stops: list[DateTemplateStopPayload] = []
+    for index, raw_stop in enumerate(stops_raw):
+        if not isinstance(raw_stop, dict):
+            raise FrontendApiError(f"template.stops[{index}] must be a mapping.")
+        stops.append(
+            DateTemplateStopPayload(
+                type=_required_text(raw_stop.get("type"), field_name=f"template.stops[{index}].type"),
+                kind="connective"
+                if _optional_text(raw_stop.get("kind")) == "connective"
+                else "venue",
+                note=_optional_text(raw_stop.get("note")),
+            )
+        )
+
+    meaningful_variations = _optional_int(raw_template.get("meaningful_variations"))
+    if meaningful_variations is None or meaningful_variations < 0:
+        raise FrontendApiError("template.meaningful_variations must be a non-negative integer.")
+
+    duration_hours = _optional_float(raw_template.get("duration_hours"))
+    if duration_hours is None or duration_hours <= 0:
+        raise FrontendApiError("template.duration_hours must be a positive number.")
+
+    weather_sensitive = raw_template.get("weather_sensitive")
+    if not isinstance(weather_sensitive, bool):
+        raise FrontendApiError("template.weather_sensitive must be a boolean.")
+
+    return DateTemplatePayload(
+        id=_required_text(raw_template.get("id"), field_name="template.id"),
+        title=_required_text(raw_template.get("title"), field_name="template.title"),
+        vibes=vibes,
+        timeOfDay=_required_text(raw_template.get("time_of_day"), field_name="template.time_of_day"),
+        durationHours=duration_hours,
+        meaningfulVariations=meaningful_variations,
+        weatherSensitive=weather_sensitive,
+        description=_required_text(raw_template.get("description"), field_name="template.description"),
+        stops=stops,
     )
 
 
@@ -483,6 +661,27 @@ def _format_duration_text(duration_seconds: float | None) -> str:
     return f"{hours} hr {remainder} min"
 
 
+def _maps_verification_needed(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    flags = (
+        value.get("all_legs_under_threshold"),
+        value.get("all_open_at_plan_time"),
+        value.get("all_venues_matched"),
+    )
+    normalized = [flag for flag in flags if isinstance(flag, bool)]
+    if not normalized:
+        return False
+    return not all(normalized)
+
+
+def _stop_kind(stop: dict[str, Any]) -> str:
+    kind = _optional_text(stop.get("kind"))
+    if kind == "connective":
+        return "connective"
+    return "venue"
+
+
 def _estimate_stop_times(*, plan_time_iso: str | None, stop_count: int) -> list[str]:
     if plan_time_iso is None or stop_count <= 0:
         return []
@@ -491,6 +690,103 @@ def _estimate_stop_times(*, plan_time_iso: str | None, stop_count: int) -> list[
     for index in range(stop_count):
         out.append((parsed + pd.Timedelta(minutes=index * 75)).strftime("%-I:%M %p"))
     return out
+
+
+def _estimate_stop_times_iso(*, plan_time_iso: str | None, stop_count: int) -> list[str]:
+    if plan_time_iso is None or stop_count <= 0:
+        return []
+    parsed = pd.Timestamp(plan_time_iso)
+    out: list[str] = []
+    for index in range(stop_count):
+        out.append((parsed + pd.Timedelta(minutes=index * 75)).isoformat())
+    return out
+
+
+def _build_booking_context(
+    *,
+    plan_id: str,
+    plan_time_iso: str | None,
+    stops_data: list[Any],
+    stop_times_iso: list[str],
+    requested_party_size: int | None,
+) -> BookingContextPayload | None:
+    chosen_index: int | None = None
+    chosen_stop: dict[str, Any] | None = None
+
+    for index, stop in enumerate(stops_data):
+        if not isinstance(stop, dict):
+            continue
+        stop_type = (_optional_text(stop.get("stop_type")) or "").casefold()
+        if "restaurant" in stop_type:
+            chosen_index = index
+            chosen_stop = stop
+            break
+
+    if chosen_stop is None:
+        for index, stop in enumerate(stops_data):
+            if not isinstance(stop, dict):
+                continue
+            signals = {item.casefold() for item in _string_list(stop.get("booking_signals"))}
+            if {"booking", "third_party_booking"} & signals:
+                chosen_index = index
+                chosen_stop = stop
+                break
+
+    if chosen_stop is None:
+        return None
+
+    restaurant_name = _optional_text(chosen_stop.get("name"))
+    if restaurant_name is None:
+        logger.error("Plan %s booking candidate stop is missing a name.", plan_id)
+        return None
+
+    arrival_iso = None
+    if chosen_index is not None and chosen_index < len(stop_times_iso):
+        arrival_iso = stop_times_iso[chosen_index]
+    elif plan_time_iso is not None:
+        arrival_iso = plan_time_iso
+
+    return BookingContextPayload(
+        planId=plan_id,
+        restaurantName=restaurant_name,
+        restaurantPhoneNumber=_extract_booking_phone_number(
+            chosen_stop,
+            plan_id=plan_id,
+            stop_index=chosen_index,
+        ),
+        restaurantAddress=_optional_text(chosen_stop.get("address")),
+        suggestedArrivalTimeIso=arrival_iso,
+        partySize=requested_party_size or 2,
+    )
+
+
+def _extract_booking_phone_number(
+    stop: dict[str, Any],
+    *,
+    plan_id: str,
+    stop_index: int | None,
+) -> str | None:
+    for key in (
+        "phone_number",
+        "restaurant_phone_number",
+        "international_phone_number",
+        "formatted_phone_number",
+        "national_phone_number",
+    ):
+        value = _optional_text(stop.get(key))
+        if value is None:
+            continue
+        if _E164_PHONE_RE.fullmatch(value):
+            return value
+        logger.warning(
+            "Plan %s stop %s has non-E.164 phone number in %s; omitting unsafe prefill: %r",
+            plan_id,
+            stop_index,
+            key,
+            value,
+        )
+        return None
+    return None
 
 
 def _plan_hour(plan_time_iso: str | None) -> int | None:
@@ -567,6 +863,15 @@ def _optional_float(value: Any) -> float | None:
     if math.isnan(number) or math.isinf(number):
         return None
     return number
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _repo_path(value: Path | str) -> Path:

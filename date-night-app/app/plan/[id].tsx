@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Image, Linking, StyleSheet, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
+
 import {
   ActionButton,
   Eyebrow,
@@ -8,6 +9,8 @@ import {
   SurfaceCard,
   palette,
 } from "../../components/ui";
+import { fetchPlan } from "../../lib/api";
+import { mergePlanWithCachedContext } from "../../lib/planContext";
 import { getPlanById } from "../../lib/storage";
 import { Plan } from "../../lib/types";
 
@@ -16,26 +19,49 @@ export default function PlanDetailScreen() {
   const { id } = useLocalSearchParams<{ id?: string }>();
   const [plan, setPlan] = useState<Plan | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | undefined>();
+  const [warning, setWarning] = useState<string | undefined>();
 
   useEffect(() => {
     let active = true;
 
     async function loadPlan() {
       if (!id) {
+        setError("Missing plan id.");
         setLoading(false);
         return;
       }
 
-      const result = await getPlanById(id);
+      const cachedPlan = await getPlanById(id);
       if (!active) {
         return;
       }
-      setPlan(result ?? null);
+
+      try {
+        const livePlan = await fetchPlan(id);
+        if (!active) {
+          return;
+        }
+        setPlan(mergePlanWithCachedContext(livePlan, cachedPlan));
+        setWarning(undefined);
+        setLoading(false);
+        return;
+      } catch (liveError) {
+        console.error("Live plan fetch failed.", liveError);
+      }
+      if (!cachedPlan) {
+        setError("Live plan details failed to load and no cached copy is available on this device.");
+        setLoading(false);
+        return;
+      }
+      setPlan(cachedPlan);
+      setWarning(
+        "Live plan details are unavailable, so this screen is showing the last cached copy stored on this device."
+      );
       setLoading(false);
     }
 
     void loadPlan();
-
     return () => {
       active = false;
     };
@@ -57,10 +83,12 @@ export default function PlanDetailScreen() {
       <ScreenShell contentContainerStyle={styles.centered}>
         <SurfaceCard style={styles.centerCard}>
           <Text style={styles.centerTitle}>Plan not found</Text>
-          <Text style={styles.centerText}>
-            This plan is no longer in the active or saved cache.
-          </Text>
-          <ActionButton label="Back to results" variant="secondary" onPress={() => router.back()} />
+          <Text style={styles.centerText}>{error || "No plan data was available."}</Text>
+          <ActionButton
+            label="Back to results"
+            variant="secondary"
+            onPress={() => router.back()}
+          />
         </SurfaceCard>
       </ScreenShell>
     );
@@ -79,6 +107,13 @@ export default function PlanDetailScreen() {
         {plan.summary ? <Text style={styles.summary}>{plan.summary}</Text> : null}
       </View>
 
+      {warning ? (
+        <SurfaceCard style={styles.sectionCard}>
+          <Text style={styles.sectionTitle}>Cached copy</Text>
+          <Text style={styles.summary}>{warning}</Text>
+        </SurfaceCard>
+      ) : null}
+
       <View style={styles.metaWrap}>
         {plan.durationLabel ? <MetaCard label="Duration" value={plan.durationLabel} /> : null}
         {plan.costBand ? <MetaCard label="Budget" value={plan.costBand} /> : null}
@@ -89,7 +124,8 @@ export default function PlanDetailScreen() {
         <SurfaceCard style={styles.sectionCard}>
           <Text style={styles.sectionTitle}>Manual map check recommended</Text>
           <Text style={styles.summary}>
-            The backend flagged this plan for a quick maps sanity check before treating travel timing or venue availability as final.
+            The backend flagged this plan for a quick sanity check before treating timing
+            or venue availability as final.
           </Text>
         </SurfaceCard>
       ) : null}
@@ -171,7 +207,11 @@ export default function PlanDetailScreen() {
             }
           />
         ) : null}
-        <ActionButton label="Saved dates" variant="secondary" onPress={() => router.push("/saved")} />
+        <ActionButton
+          label="Saved dates"
+          variant="secondary"
+          onPress={() => router.push("/saved")}
+        />
       </View>
     </ScreenShell>
   );
@@ -199,8 +239,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   centerCard: {
-    gap: 10,
+    gap: 12,
     alignItems: "center",
+    paddingHorizontal: 24,
   },
   centerTitle: {
     color: palette.text,
@@ -267,8 +308,8 @@ const styles = StyleSheet.create({
   },
   sectionTitle: {
     color: palette.text,
-    fontSize: 24,
-    fontWeight: "900",
+    fontSize: 20,
+    fontWeight: "800",
   },
   tagWrap: {
     flexDirection: "row",
@@ -277,11 +318,9 @@ const styles = StyleSheet.create({
   },
   tag: {
     borderRadius: 999,
+    backgroundColor: palette.panelSoft,
     paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
-    borderWidth: 1,
-    borderColor: palette.border,
+    paddingVertical: 7,
   },
   tagText: {
     color: palette.textSoft,
@@ -296,43 +335,42 @@ const styles = StyleSheet.create({
     gap: 12,
     alignItems: "center",
   },
-  stopHeaderCopy: {
-    flex: 1,
-    gap: 3,
-  },
   stopBadge: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: "rgba(255, 122, 89, 0.18)",
-    borderWidth: 1,
-    borderColor: "rgba(255, 151, 124, 0.34)",
-    justifyContent: "center",
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: palette.accent,
   },
   stopBadgeText: {
-    color: palette.text,
-    fontWeight: "900",
+    color: "#fff",
+    fontWeight: "800",
+  },
+  stopHeaderCopy: {
+    flex: 1,
+    gap: 2,
   },
   stopTitle: {
     color: palette.text,
+    fontSize: 18,
     fontWeight: "800",
-    fontSize: 17,
   },
   stopType: {
     color: palette.textMuted,
-    fontSize: 13,
+    fontSize: 12,
+    fontWeight: "700",
   },
   stopDescription: {
     color: palette.textSoft,
     lineHeight: 22,
   },
   whyItFits: {
-    color: palette.accentWarm,
+    color: palette.textMuted,
     lineHeight: 21,
   },
   stopMeta: {
-    gap: 6,
+    gap: 4,
   },
   stopMetaText: {
     color: palette.textMuted,
@@ -341,7 +379,7 @@ const styles = StyleSheet.create({
   transportRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    gap: 12,
+    gap: 16,
   },
   transportMode: {
     color: palette.text,
@@ -352,6 +390,6 @@ const styles = StyleSheet.create({
   },
   actions: {
     gap: 12,
-    marginBottom: 6,
+    paddingBottom: 24,
   },
 });

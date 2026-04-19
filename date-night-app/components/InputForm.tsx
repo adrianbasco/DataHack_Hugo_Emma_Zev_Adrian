@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { StyleSheet, Text, TextInput, View } from "react-native";
-import { DateTemplate, GenerateFormRequest, TransportMode, Vibe } from "../lib/types";
+import { DateTemplate, GenerateFormRequest, Vibe } from "../lib/types";
 import {
   ActionButton,
   Eyebrow,
@@ -13,12 +13,6 @@ type Props = {
   selectedTemplate?: DateTemplate;
   onSubmit: (payload: GenerateFormRequest) => void;
 };
-
-const transportOptions: { label: string; value: TransportMode }[] = [
-  { label: "Walk", value: "walking" },
-  { label: "Transit", value: "public_transport" },
-  { label: "Drive", value: "driving" },
-];
 
 const vibeOptions: Vibe[] = [
   "romantic",
@@ -35,7 +29,6 @@ const timeWindows = ["Morning", "Afternoon", "Evening", "Night", "Flexible"];
 export default function InputForm({ selectedTemplate, onSubmit }: Props) {
   const [location, setLocation] = useState("");
   const [radiusKm, setRadiusKm] = useState("10");
-  const [transportMode, setTransportMode] = useState<TransportMode>("driving");
   const [vibes, setVibes] = useState<Vibe[]>(selectedTemplate?.vibes ?? ["romantic"]);
   const [budget, setBudget] = useState<GenerateFormRequest["budget"]>("$$");
   const [timeWindow, setTimeWindow] = useState<string>(
@@ -68,7 +61,6 @@ export default function InputForm({ selectedTemplate, onSubmit }: Props) {
       vibes,
       radiusKm: Number(radiusKm) || 10,
       budget,
-      transportMode,
       partySize: Number(partySize) || 2,
       timeWindow,
       desiredIdeaCount: Number(desiredIdeaCount) || 4,
@@ -76,6 +68,9 @@ export default function InputForm({ selectedTemplate, onSubmit }: Props) {
       accessibilityConstraints: accessibilityConstraints || undefined,
       notes: notes || undefined,
       selectedTemplateId: selectedTemplate?.id,
+      selectedTemplateTitle: selectedTemplate?.title,
+      selectedTemplateStopTypes: selectedTemplate?.stops.map((stop) => stop.type),
+      selectedTemplateDurationHours: selectedTemplate?.durationHours,
     });
   }
 
@@ -170,19 +165,6 @@ export default function InputForm({ selectedTemplate, onSubmit }: Props) {
                 />
               </FormField>
             </View>
-
-            <FormField label="Transport" helper="How you'll move">
-              <View style={styles.chipWrap}>
-                {transportOptions.map((option) => (
-                  <SelectChip
-                    key={option.value}
-                    label={option.label}
-                    selected={transportMode === option.value}
-                    onPress={() => setTransportMode(option.value)}
-                  />
-                ))}
-              </View>
-            </FormField>
 
             <FormField label="Number of ideas" helper="How many options">
               <TextInput

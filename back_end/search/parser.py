@@ -6,9 +6,14 @@ import json
 import logging
 import math
 import re
+from collections import Counter
 from collections.abc import Iterable
 
 from back_end.catalog import VIBES
+from back_end.agents.date_idea_agent import (
+    DEFAULT_DATE_IDEA_AGENT_MODEL,
+    DEFAULT_REASONING_EFFORT,
+)
 from back_end.catalog.repository import PlacesRepository
 from back_end.clients.openrouter import OpenRouterClient, OpenRouterClientError
 from back_end.clients.settings import OpenRouterConfigurationError, OpenRouterSettings
@@ -58,6 +63,21 @@ TEMPLATE_HINT_PATTERNS: dict[str, re.Pattern[str]] = {
     "museum": re.compile(r"\b(museum|gallery|aquarium|zoo)\b", re.I),
     "brunch": re.compile(r"\b(brunch|breakfast|coffee)\b", re.I),
 }
+
+
+def _nullable_string_schema() -> dict[str, object]:
+    return {"anyOf": [{"type": "string"}, {"type": "null"}]}
+
+
+def _nullable_enum_schema(values: list[str]) -> dict[str, object]:
+    return {
+        "anyOf": [
+            {"type": "string", "enum": values},
+            {"type": "null"},
+        ]
+    }
+
+
 LLM_RESPONSE_SCHEMA: dict[str, object] = {
     "type": "object",
     "additionalProperties": False,
@@ -66,24 +86,21 @@ LLM_RESPONSE_SCHEMA: dict[str, object] = {
             "type": "array",
             "items": {"type": "string", "enum": sorted(VIBES)},
         },
-        "time_of_day": {
-            "type": ["string", "null"],
-            "enum": ["morning", "midday", "afternoon", "evening", "night", "flexible", None],
-        },
-        "weather_ok": {
-            "type": ["string", "null"],
-            "enum": [WeatherPreference.INDOORS_ONLY.value, WeatherPreference.OUTDOORS_OK.value, None],
-        },
-        "location_text": {"type": ["string", "null"]},
-        "transport_mode": {
-            "type": ["string", "null"],
-            "enum": ["walking", "public_transport", "driving", None],
-        },
+        "time_of_day": _nullable_enum_schema(
+            ["morning", "midday", "afternoon", "evening", "night", "flexible"]
+        ),
+        "weather_ok": _nullable_enum_schema(
+            [WeatherPreference.INDOORS_ONLY.value, WeatherPreference.OUTDOORS_OK.value]
+        ),
+        "location_text": _nullable_string_schema(),
+        "transport_mode": _nullable_enum_schema(
+            ["walking", "public_transport", "driving"]
+        ),
         "template_hints": {
             "type": "array",
             "items": {"type": "string"},
         },
-        "free_text_residual": {"type": ["string", "null"]},
+        "free_text_residual": _nullable_string_schema(),
         "warnings": {
             "type": "array",
             "items": {"type": "string"},
@@ -110,12 +127,15 @@ class QueryParser:
         repository: PlacesRepository,
         *,
         llm_client: OpenRouterClient | None = None,
-        model: str | None = None,
+        model: str | None = DEFAULT_DATE_IDEA_AGENT_MODEL,
+        reasoning_effort: str | None = DEFAULT_REASONING_EFFORT,
     ) -> None:
         self._repository = repository
         self._llm_client = llm_client
         self._model = model
+        self._reasoning_effort = reasoning_effort
         self._known_localities = self._load_known_localities(repository)
+        self._canonical_regions = self._load_canonical_regions(repository)
 
     async def parse(
         self,
@@ -132,7 +152,7 @@ class QueryParser:
         llm_parse: ParsedQuery | None = None
         llm_attempted = False
 
-        llm_client = self._resolve_llm_client()
+        llm_client, owns_llm_client = self._resolve_llm_client()
         if llm_client is None:
             llm_warnings.append(
                 "LLM parser was unavailable; using deterministic query parsing only."
@@ -148,6 +168,9 @@ class QueryParser:
             except (OpenRouterClientError, RuntimeError, ValueError, TypeError) as exc:
                 logger.error("LLM query parsing failed for query=%r: %s", clean_query, exc)
                 llm_warnings.append(f"LLM parser failed: {exc}")
+            finally:
+                if owns_llm_client:
+                    await llm_client.aclose()
 
         merged = _merge_rule_and_llm(rule_parse, llm_parse)
         warnings = tuple(
@@ -174,15 +197,15 @@ class QueryParser:
             llm_succeeded=llm_parse is not None,
         )
 
-    def _resolve_llm_client(self) -> OpenRouterClient | None:
+    def _resolve_llm_client(self) -> tuple[OpenRouterClient | None, bool]:
         if self._llm_client is not None:
-            return self._llm_client
+            return self._llm_client, False
         try:
             settings = OpenRouterSettings.from_env()
         except OpenRouterConfigurationError as exc:
             logger.warning("Search parser LLM disabled: %s", exc)
-            return None
-        return OpenRouterClient(settings)
+            return None, False
+        return OpenRouterClient(settings), True
 
     async def _parse_with_llm(
         self,
@@ -220,6 +243,14 @@ class QueryParser:
                 LLM_RESPONSE_SCHEMA,
             ),
             max_tokens=300,
+            extra_body={
+                "reasoning": {
+                    "effort": self._reasoning_effort,
+                    "exclude": True,
+                }
+            }
+            if self._reasoning_effort is not None
+            else None,
         )
         payload = json.loads(response.output_text or "{}")
         if not isinstance(payload, dict):
@@ -253,8 +284,14 @@ class QueryParser:
             location_text = postcode_match.group(0)
             phrases_to_strip.append(location_text)
         elif matched_localities:
-            location_text = matched_localities[0]
-            phrases_to_strip.append(location_text)
+            matched_locality = matched_localities[0]
+            canonical_region = self._canonical_regions.get(matched_locality.casefold())
+            location_text = (
+                f"{matched_locality}, {canonical_region}"
+                if canonical_region is not None
+                else matched_locality
+            )
+            phrases_to_strip.append(matched_locality)
             if len(matched_localities) > 1:
                 warnings.append(
                     "Multiple locality names were detected; using the longest match."
@@ -313,6 +350,28 @@ class QueryParser:
         localities = repository.open_places_df["locality"].dropna().astype(str)
         unique = {value.strip() for value in localities if value and value.strip()}
         return tuple(sorted(unique, key=lambda item: (-len(item), item.casefold())))
+
+    @staticmethod
+    def _load_canonical_regions(repository: PlacesRepository) -> dict[str, str]:
+        allowed_regions = {"nsw", "vic", "qld", "wa", "sa", "tas", "act", "nt"}
+        frame = repository.open_places_df.loc[:, ["locality", "region"]].dropna()
+        counts: dict[str, Counter[str]] = {}
+        for locality, region in frame.itertuples(index=False):
+            locality_text = str(locality).strip()
+            region_text = str(region).strip().casefold()
+            if not locality_text or region_text not in allowed_regions:
+                continue
+            key = locality_text.casefold()
+            counter = counts.setdefault(key, Counter())
+            counter[region_text] += 1
+
+        canonical: dict[str, str] = {}
+        for locality_key, counter in counts.items():
+            region, count = counter.most_common(1)[0]
+            if count <= 0:
+                continue
+            canonical[locality_key] = region.upper()
+        return canonical
 
     def _matched_localities(self, lowered_query: str) -> tuple[str, ...]:
         matches: list[str] = []

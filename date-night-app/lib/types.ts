@@ -28,7 +28,7 @@ export type GenerateFormRequest = {
   vibes: Vibe[];
   radiusKm: number;
   budget?: Budget | "";
-  transportMode: TransportMode;
+  transportMode?: TransportMode;
   partySize: number;
   timeWindow?: string;
   desiredIdeaCount: number;
@@ -36,6 +36,9 @@ export type GenerateFormRequest = {
   accessibilityConstraints?: string;
   notes?: string;
   selectedTemplateId?: string;
+  selectedTemplateTitle?: string;
+  selectedTemplateStopTypes?: string[];
+  selectedTemplateDurationHours?: number;
 };
 
 export type GenerateChatRequest = {
@@ -50,6 +53,9 @@ export type GenerateChatRequest = {
   constraints?: string;
   desiredIdeaCount: number;
   selectedTemplateId?: string;
+  selectedTemplateTitle?: string;
+  selectedTemplateStopTypes?: string[];
+  selectedTemplateDurationHours?: number;
 };
 
 export type TemplateStop = {
@@ -127,7 +133,7 @@ export type DataResult<T> = {
 
 export type RestaurantBookingRequest = {
   restaurantName: string;
-  restaurantPhoneNumber: string;
+  restaurantPhoneNumber?: string;
   arrivalTimeIso: string;
   partySize: number;
   bookingName: string;
@@ -141,19 +147,56 @@ export type RestaurantBookingRequest = {
   planId?: string;
 };
 
+export type RestaurantBookingStatusValue =
+  | "queued"
+  | "in_progress"
+  | "confirmed"
+  | "declined"
+  | "no_answer"
+  | "needs_human_follow_up"
+  | "failed"
+  | "unknown";
+
+export type BlandCallDescription = {
+  provider: "bland_ai";
+  phoneNumber: string;
+  firstSentence?: string | null;
+  task?: string | null;
+  voice?: string | null;
+  model?: string | null;
+  language?: string | null;
+  timezone?: string | null;
+  maxDurationMinutes?: number | null;
+  waitForGreeting: boolean;
+  record: boolean;
+  voicemail?: Record<string, unknown> | null;
+  requestData: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  dispositions: string[];
+  keywords: string[];
+  summaryPrompt?: string | null;
+};
+
+export type RestaurantBookingPreview = {
+  bookingContext: BookingContext;
+  callDescription: BlandCallDescription;
+  liveCallEnabled: boolean;
+  liveCallDisabledReason?: string | null;
+};
+
 export type RestaurantBookingJob = {
   callId: string;
-  status: string;
-  provider: string;
+  status: RestaurantBookingStatusValue;
+  provider: "bland_ai";
   restaurantName: string;
-  restaurantPhoneNumber: string;
+  restaurantPhoneNumber?: string | null;
   arrivalTimeIso: string;
   partySize: number;
 };
 
 export type RestaurantBookingStatus = {
   callId: string;
-  status: string;
+  status: RestaurantBookingStatusValue;
   providerStatus?: string | null;
   queueStatus?: string | null;
   answeredBy?: string | null;

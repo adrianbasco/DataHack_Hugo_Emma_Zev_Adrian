@@ -10,7 +10,6 @@ import {
   SurfaceCard,
   palette,
 } from "../components/ui";
-import { findFallbackTemplateById } from "../lib/mockTemplates";
 import {
   DateTemplate,
   GenerateChatRequest,
@@ -26,11 +25,12 @@ export default function HomeScreen() {
     if (typeof params.template === "string" && params.template) {
       try {
         return JSON.parse(params.template) as DateTemplate;
-      } catch {
-        return findFallbackTemplateById(params.templateId);
+      } catch (error) {
+        console.error("Template route param could not be parsed.", error);
+        return undefined;
       }
     }
-    return findFallbackTemplateById(params.templateId);
+    return undefined;
   }, [params.template, params.templateId]);
 
   const [mode, setMode] = useState<PlannerMode>(

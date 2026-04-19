@@ -3,7 +3,6 @@ import {
   Animated,
   Image,
   PanResponder,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -39,7 +38,6 @@ export default function SwipeDeck({
   currentIndexRef.current = currentIndex;
 
   const currentPlan = plans[currentIndex];
-  const nextPlan = plans[currentIndex + 1];
 
   const deckWidth = Math.min(Math.max(screenWidth - 24, 280), MAX_CARD_WIDTH);
   const cardHeight = Math.min(Math.max(screenHeight * 0.68, 500), 700);
@@ -160,39 +158,6 @@ const panResponder = useMemo(
     <View style={styles.flex}>
       <View style={styles.container}>
         <View style={[styles.deckArea, { width: deckWidth, minHeight: cardHeight }]}>
-          {nextPlan ? (
-            <View
-              style={[
-                styles.card,
-                styles.nextCard,
-                { width: deckWidth, minHeight: cardHeight },
-              ]}
-              pointerEvents="none"
-            >
-              {nextPlan.heroImageUrl ? (
-                <Image
-                  source={{ uri: nextPlan.heroImageUrl }}
-                  style={[styles.image, { height: imageHeight }]}
-                />
-              ) : (
-                <View
-                  style={[
-                    styles.image,
-                    styles.imagePlaceholder,
-                    { height: imageHeight },
-                  ]}
-                />
-              )}
-
-              <View style={styles.cardBody}>
-                <Text style={styles.kicker}>Up next</Text>
-                <Text style={styles.title} numberOfLines={1}>
-                  {nextPlan.title}
-                </Text>
-              </View>
-            </View>
-          ) : null}
-
           <Animated.View
             {...panResponder.panHandlers}
             style={[
@@ -339,10 +304,6 @@ const styles = StyleSheet.create({
     shadowRadius: 24,
     shadowOffset: { width: 0, height: 14 },
     elevation: 10,
-  },
-  nextCard: {
-    transform: [{ scale: 0.96 }, { translateY: 12 }],
-    opacity: 0.45,
   },
   cardPressable: {
     flex: 1,

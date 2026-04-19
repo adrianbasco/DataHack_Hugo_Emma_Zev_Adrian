@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import unittest
 from datetime import datetime
 from typing import Callable
@@ -36,6 +37,7 @@ class BookingRequestBuilderTests(unittest.TestCase):
     def setUp(self) -> None:
         self.settings = BlandAISettings(
             api_key="test-key",
+            booking_phone_number="+61491114073",
             default_voice="maya",
             max_duration_minutes=6,
             record_calls=False,
@@ -67,7 +69,7 @@ class BookingRequestBuilderTests(unittest.TestCase):
 
         payload = call_request.to_payload()
 
-        self.assertEqual("+61412345678", payload["phone_number"])
+        self.assertEqual("+61491114073", payload["phone_number"])
         self.assertTrue(payload["first_sentence"].startswith("Heyyy"))
         self.assertEqual("maya", payload["voice"])
         self.assertEqual(6, payload["max_duration"])
@@ -77,9 +79,33 @@ class BookingRequestBuilderTests(unittest.TestCase):
         self.assertIn("do not book a different time", payload["task"])
         self.assertIn("One vegetarian diner", payload["task"])
         self.assertEqual("Example Bistro", payload["request_data"]["restaurant_name"])
+        self.assertEqual("+61412345678", payload["request_data"]["restaurant_phone_number"])
         self.assertEqual("Emma", payload["request_data"]["booking_name"])
         self.assertEqual("plan_123", payload["metadata"]["plan_id"])
+        self.assertEqual("+61491114073", payload["metadata"]["configured_call_target"])
         self.assertIn("booking_confirmed", payload["dispositions"])
+
+    def test_rejects_invalid_configured_call_target(self) -> None:
+        builder = BookingRequestBuilder(
+            BlandAISettings(
+                api_key="test-key",
+                booking_phone_number="+12125550123",
+            )
+        )
+
+        with self.assertRaisesRegex(
+            BookingValidationError,
+            "BLAND_AI_BOOKING_PHONE_NUMBER",
+        ):
+            builder.build(
+                RestaurantBookingRequest(
+                    restaurant_name="Example Bistro",
+                    restaurant_phone_number="+61412345678",
+                    arrival_time=self.arrival_time,
+                    party_size=2,
+                    booking_name="Emma",
+                )
+            )
 
     def test_builds_explicit_allowed_time_window(self) -> None:
         call_request = self.builder.build(
@@ -97,6 +123,22 @@ class BookingRequestBuilderTests(unittest.TestCase):
 
         self.assertIn("within 30 minutes", payload["task"])
         self.assertEqual(30, payload["request_data"]["acceptable_time_window_minutes"])
+
+    def test_builds_booking_call_without_restaurant_phone_context(self) -> None:
+        call_request = self.builder.build(
+            RestaurantBookingRequest(
+                restaurant_name="Example Bistro",
+                arrival_time=self.arrival_time,
+                party_size=2,
+                booking_name="Zev",
+            )
+        )
+
+        payload = call_request.to_payload()
+
+        self.assertEqual("+61491114073", payload["phone_number"])
+        self.assertNotIn("restaurant_phone_number", payload["request_data"])
+        self.assertIn("Restaurant: Example Bistro.", payload["task"])
 
     def test_rejects_naive_arrival_time(self) -> None:
         with self.assertRaises(BookingValidationError):
@@ -152,6 +194,7 @@ class BookingServiceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.settings = BlandAISettings(
             api_key="test-key",
+            booking_phone_number="+61491114073",
             base_url="https://api.test.bland.ai/v1",
             max_duration_minutes=6,
         )
@@ -200,6 +243,11 @@ class BookingServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("call_123", job.call_id)
         self.assertEqual(BookingStatus.QUEUED, job.status)
         self.assertEqual("restaurant_booking", captured["body"]["metadata"]["purpose"])
+        self.assertEqual("+61491114073", captured["body"]["phone_number"])
+        self.assertEqual(
+            "+61412345678",
+            captured["body"]["request_data"]["restaurant_phone_number"],
+        )
         self.assertEqual(3, captured["body"]["request_data"]["party_size"])
 
     async def test_get_booking_status_maps_confirmed_disposition(self) -> None:
@@ -247,6 +295,32 @@ class BookingServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(BookingStatus.NO_ANSWER, status.status)
 
+    async def test_get_booking_status_maps_needs_human_follow_up(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _make_response(
+                request,
+                200,
+                {
+                    "call_id": "call_123",
+                    "completed": True,
+                    "status": "completed",
+                    "queue_status": "complete",
+                    "answered_by": "human",
+                    "summary": "Restaurant asked for a deposit link to finish the booking.",
+                    "disposition_tag": "needs_human_follow_up",
+                },
+            )
+
+        service, client = self._service_with_handler(handler)
+        self.addAsyncCleanup(client.aclose)
+
+        with self.assertLogs("back_end.services.booking", level=logging.WARNING) as logs:
+            status = await service.get_booking_status("call_123")
+
+        self.assertEqual(BookingStatus.NEEDS_HUMAN_FOLLOW_UP, status.status)
+        self.assertIsNone(status.error_message)
+        self.assertTrue(any("requires human follow-up" in message for message in logs.output))
+
     async def test_get_booking_status_marks_completed_call_without_disposition_unknown(
         self,
     ) -> None:
@@ -270,6 +344,10 @@ class BookingServiceTests(unittest.IsolatedAsyncioTestCase):
         status = await service.get_booking_status("call_123")
 
         self.assertEqual(BookingStatus.UNKNOWN, status.status)
+        self.assertEqual(
+            "Bland AI returned an unexpected booking status.",
+            status.error_message,
+        )
 
     def _service_with_handler(
         self,

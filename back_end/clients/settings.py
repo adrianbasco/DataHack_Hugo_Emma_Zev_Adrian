@@ -26,6 +26,18 @@ class BlandAIConfigurationError(RuntimeError):
     """Raised when Bland AI-backed code is configured incorrectly."""
 
 
+DEFAULT_BLAND_AI_BOOKING_PHONE_NUMBER = "+61491114073"
+
+
+def bland_ai_booking_phone_number_from_env() -> str:
+    """Return the configured safe outbound booking target."""
+
+    return (
+        _read_optional_string("BLAND_AI_BOOKING_PHONE_NUMBER")
+        or DEFAULT_BLAND_AI_BOOKING_PHONE_NUMBER
+    )
+
+
 def _read_float(
     name: str,
     default: float,
@@ -365,6 +377,7 @@ class BlandAISettings:
     """Settings for Bland AI outbound restaurant booking calls."""
 
     api_key: str
+    booking_phone_number: str = DEFAULT_BLAND_AI_BOOKING_PHONE_NUMBER
     base_url: str = "https://api.bland.ai/v1"
     timeout_seconds: float = 20.0
     status_retry_count: int = 1
@@ -387,6 +400,7 @@ class BlandAISettings:
 
         return cls(
             api_key=api_key,
+            booking_phone_number=bland_ai_booking_phone_number_from_env(),
             base_url=(
                 _read_optional_string("BLAND_AI_BASE_URL")
                 or "https://api.bland.ai/v1"
