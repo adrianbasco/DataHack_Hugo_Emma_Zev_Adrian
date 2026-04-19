@@ -1,241 +1,377 @@
-import { useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { StyleSheet, Text, TextInput, View } from "react-native";
+import { DateTemplate, GenerateFormRequest, TransportMode, Vibe } from "../lib/types";
 import {
-  View,
-  Text,
-  TextInput,
-  Pressable,
-  StyleSheet,
-  ScrollView,
-} from "react-native";
-import { Budget, GenerateRequest, TransportMode } from "../lib/types";
+  ActionButton,
+  Eyebrow,
+  SelectChip,
+  SurfaceCard,
+  palette,
+} from "./ui";
 
 type Props = {
-  onSubmit: (payload: GenerateRequest) => void;
+  selectedTemplate?: DateTemplate;
+  onSubmit: (payload: GenerateFormRequest) => void;
 };
 
-export default function InputForm({ onSubmit }: Props) {
+const transportOptions: { label: string; value: TransportMode }[] = [
+  { label: "Walk", value: "walking" },
+  { label: "Public transport", value: "public_transport" },
+  { label: "Drive", value: "driving" },
+];
+
+const vibeOptions: Vibe[] = [
+  "romantic",
+  "foodie",
+  "nightlife",
+  "nerdy",
+  "outdoorsy",
+  "active",
+  "casual",
+];
+
+const timeWindows = [
+  "Morning",
+  "Midday",
+  "Afternoon",
+  "Evening",
+  "Night",
+  "Flexible",
+];
+
+export default function InputForm({ selectedTemplate, onSubmit }: Props) {
   const [location, setLocation] = useState("");
   const [radiusKm, setRadiusKm] = useState("10");
-  const [transportMode, setTransportMode] = useState<TransportMode>("walking");
-  const [vibe, setVibe] = useState("romantic");
-  const [budget, setBudget] = useState<Budget>("$$");
-  const [startTime, setStartTime] = useState("18:00");
-  const [durationMinutes, setDurationMinutes] = useState("180");
+  const [transportMode, setTransportMode] = useState<TransportMode>("driving");
+  const [vibes, setVibes] = useState<Vibe[]>(selectedTemplate?.vibes ?? ["romantic"]);
+  const [budget, setBudget] = useState<GenerateFormRequest["budget"]>("$$");
+  const [timeWindow, setTimeWindow] = useState<string>(
+    selectedTemplate?.timeOfDay ?? "evening"
+  );
   const [partySize, setPartySize] = useState("2");
-  const [constraintsNote, setConstraintsNote] = useState("");
+  const [desiredIdeaCount, setDesiredIdeaCount] = useState("4");
+  const [dietaryConstraints, setDietaryConstraints] = useState("");
+  const [accessibilityConstraints, setAccessibilityConstraints] = useState("");
+  const [notes, setNotes] = useState("");
+
+  useEffect(() => {
+    if (!selectedTemplate) {
+      return;
+    }
+    setVibes(selectedTemplate.vibes);
+    setTimeWindow(selectedTemplate.timeOfDay);
+  }, [selectedTemplate?.id]);
+
+  function toggleVibe(vibe: Vibe) {
+    setVibes((current) =>
+      current.includes(vibe)
+        ? current.filter((entry) => entry !== vibe)
+        : [...current, vibe]
+    );
+  }
+
+  function handleSubmit() {
+    onSubmit({
+      location,
+      vibes,
+      radiusKm: Number(radiusKm) || 10,
+      budget,
+      transportMode,
+      partySize: Number(partySize) || 2,
+      timeWindow,
+      desiredIdeaCount: Number(desiredIdeaCount) || 4,
+      dietaryConstraints: dietaryConstraints || undefined,
+      accessibilityConstraints: accessibilityConstraints || undefined,
+      notes: notes || undefined,
+      selectedTemplateId: selectedTemplate?.id,
+    });
+  }
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.heroTitle}>Date Night</Text>
-      <Text style={styles.heroSubtitle}>Plan your perfect date night</Text>
+    <View style={styles.container}>
+      <View style={styles.heroWrap}>
+        <Eyebrow tone="warm">Structured planner</Eyebrow>
+        <Text style={styles.heroTitle}>Tell the planner exactly what to optimize for.</Text>
+        <Text style={styles.heroSubtitle}>
+          Use the form when you already know the city, mood, and practical constraints.
+        </Text>
+      </View>
 
-      <View style={styles.card}>
-        <FormField label="Location">
+      {selectedTemplate ? (
+        <SurfaceCard style={styles.templateCard}>
+          <Text style={styles.templateLabel}>Template selected</Text>
+          <Text style={styles.templateTitle}>{selectedTemplate.title}</Text>
+          <Text style={styles.templateText}>{selectedTemplate.description}</Text>
+        </SurfaceCard>
+      ) : null}
+
+      <SurfaceCard style={styles.card}>
+        <FormField label="Location" helper="Suburb, postcode, or city">
           <TextInput
             style={styles.input}
             value={location}
             onChangeText={setLocation}
-            placeholder="Enter suburb or postcode"
-            placeholderTextColor="#94a3b8"
+            placeholder="Sydney CBD"
+            placeholderTextColor={palette.textMuted}
           />
         </FormField>
 
         <View style={styles.row}>
-          <FormField label="Travel Radius">
+          <FormField label="Travel radius" helper="Kilometres">
             <TextInput
               style={styles.input}
               value={radiusKm}
               onChangeText={setRadiusKm}
               keyboardType="numeric"
               placeholder="10"
-              placeholderTextColor="#94a3b8"
+              placeholderTextColor={palette.textMuted}
             />
           </FormField>
 
-          <FormField label="Transport">
-            <TextInput
-              style={styles.input}
-              value={transportMode}
-              onChangeText={(text) => setTransportMode(text as TransportMode)}
-              placeholder="walking"
-              placeholderTextColor="#94a3b8"
-            />
-          </FormField>
-        </View>
-
-        <FormField label="Date Vibe">
-          <TextInput
-            style={styles.input}
-            value={vibe}
-            onChangeText={setVibe}
-            placeholder="romantic"
-            placeholderTextColor="#94a3b8"
-          />
-        </FormField>
-
-        <View style={styles.row}>
-          <FormField label="Budget">
-            <TextInput
-              style={styles.input}
-              value={budget}
-              onChangeText={(text) => setBudget(text as Budget)}
-              placeholder="$$"
-              placeholderTextColor="#94a3b8"
-            />
-          </FormField>
-
-          <FormField label="Duration (mins)">
-            <TextInput
-              style={styles.input}
-              value={durationMinutes}
-              onChangeText={setDurationMinutes}
-              keyboardType="numeric"
-              placeholder="180"
-              placeholderTextColor="#94a3b8"
-            />
-          </FormField>
-        </View>
-
-        <View style={styles.row}>
-          <FormField label="Start Time">
-            <TextInput
-              style={styles.input}
-              value={startTime}
-              onChangeText={setStartTime}
-              placeholder="18:00"
-              placeholderTextColor="#94a3b8"
-            />
-          </FormField>
-
-          <FormField label="Party Size">
+          <FormField label="Party size" helper="People">
             <TextInput
               style={styles.input}
               value={partySize}
               onChangeText={setPartySize}
               keyboardType="numeric"
               placeholder="2"
-              placeholderTextColor="#94a3b8"
+              placeholderTextColor={palette.textMuted}
             />
           </FormField>
         </View>
 
-        <FormField label="Special Notes">
+        <FormField label="Transport" helper="How you plan to move">
+          <View style={styles.chipWrap}>
+            {transportOptions.map((option) => (
+              <SelectChip
+                key={option.value}
+                label={option.label}
+                selected={transportMode === option.value}
+                onPress={() => setTransportMode(option.value)}
+              />
+            ))}
+          </View>
+        </FormField>
+
+        <FormField label="Vibes" helper="Pick one or several">
+          <View style={styles.chipWrap}>
+            {vibeOptions.map((vibe) => (
+              <SelectChip
+                key={vibe}
+                label={capitalize(vibe)}
+                selected={vibes.includes(vibe)}
+                onPress={() => toggleVibe(vibe)}
+              />
+            ))}
+          </View>
+        </FormField>
+
+        <View style={styles.row}>
+          <FormField label="Budget" helper="Spend level">
+            <View style={styles.chipWrap}>
+              {["$", "$$", "$$$", "$$$$"].map((value) => (
+                <SelectChip
+                  key={value}
+                  label={value}
+                  selected={budget === value}
+                  onPress={() => setBudget(value as GenerateFormRequest["budget"])}
+                />
+              ))}
+            </View>
+          </FormField>
+
+          <FormField label="Time window" helper="Best fit">
+            <View style={styles.chipWrap}>
+              {timeWindows.map((value) => (
+                <SelectChip
+                  key={value}
+                  label={value}
+                  selected={timeWindow?.toLowerCase() === value.toLowerCase()}
+                  onPress={() => setTimeWindow(value.toLowerCase())}
+                />
+              ))}
+            </View>
+          </FormField>
+        </View>
+
+        <View style={styles.row}>
+          <FormField label="Idea count" helper="How many options">
+            <TextInput
+              style={styles.input}
+              value={desiredIdeaCount}
+              onChangeText={setDesiredIdeaCount}
+              keyboardType="numeric"
+              placeholder="4"
+              placeholderTextColor={palette.textMuted}
+            />
+          </FormField>
+
+          <FormField label="Template mode" helper="Optional backend hint">
+            <View style={styles.templateHintBox}>
+              <Text style={styles.templateHintText}>
+                {selectedTemplate ? selectedTemplate.id : "No template selected"}
+              </Text>
+            </View>
+          </FormField>
+        </View>
+
+        <FormField label="Dietary constraints" helper="Optional">
+          <TextInput
+            style={styles.input}
+            value={dietaryConstraints}
+            onChangeText={setDietaryConstraints}
+            placeholder="Vegetarian, nut-free..."
+            placeholderTextColor={palette.textMuted}
+          />
+        </FormField>
+
+        <FormField label="Accessibility constraints" helper="Optional">
+          <TextInput
+            style={styles.input}
+            value={accessibilityConstraints}
+            onChangeText={setAccessibilityConstraints}
+            placeholder="Low walking, step-free access..."
+            placeholderTextColor={palette.textMuted}
+          />
+        </FormField>
+
+        <FormField label="Notes for the planner" helper="Optional extra context">
           <TextInput
             style={[styles.input, styles.notesInput]}
-            value={constraintsNote}
-            onChangeText={setConstraintsNote}
-            placeholder="Dietary restrictions, accessibility needs..."
-            placeholderTextColor="#94a3b8"
+            value={notes}
+            onChangeText={setNotes}
+            placeholder="Anniversary, want a surprise finish, avoid loud bars..."
+            placeholderTextColor={palette.textMuted}
             multiline
           />
         </FormField>
 
-        <Pressable
-          style={styles.primaryButton}
-          onPress={() =>
-            onSubmit({
-              location,
-              radiusKm: Number(radiusKm) || 10,
-              transportMode,
-              vibe,
-              budget,
-              startTime,
-              durationMinutes: Number(durationMinutes) || 180,
-              partySize: Number(partySize) || 2,
-              constraintsNote,
-            })
-          }
-        >
-          <Text style={styles.primaryButtonText}>Generate Date Ideas</Text>
-        </Pressable>
-      </View>
-    </ScrollView>
+        <ActionButton label="Generate ideas from form" onPress={handleSubmit} />
+      </SurfaceCard>
+    </View>
   );
 }
 
 function FormField({
   label,
+  helper,
   children,
 }: {
   label: string;
-  children: React.ReactNode;
+  helper?: string;
+  children: ReactNode;
 }) {
   return (
     <View style={styles.field}>
-      <Text style={styles.label}>{label}</Text>
+      <View style={styles.fieldHeader}>
+        <Text style={styles.label}>{label}</Text>
+        {helper ? <Text style={styles.helper}>{helper}</Text> : null}
+      </View>
       {children}
     </View>
   );
 }
 
+function capitalize(value: string) {
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
 const styles = StyleSheet.create({
   container: {
-    padding: 20,
-    backgroundColor: "#fff7f8",
+    gap: 16,
+  },
+  heroWrap: {
+    gap: 10,
   },
   heroTitle: {
-    fontSize: 32,
-    fontWeight: "700",
-    textAlign: "center",
-    color: "#be185d",
-    marginTop: 20,
+    fontSize: 34,
+    lineHeight: 40,
+    fontWeight: "900",
+    color: palette.text,
   },
   heroSubtitle: {
-    fontSize: 16,
-    textAlign: "center",
-    color: "#64748b",
-    marginTop: 6,
-    marginBottom: 20,
+    color: palette.textMuted,
+    fontSize: 15,
+    lineHeight: 23,
+  },
+  templateCard: {
+    gap: 6,
+    backgroundColor: "rgba(255, 122, 89, 0.14)",
+  },
+  templateLabel: {
+    color: palette.accentWarm,
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+  },
+  templateTitle: {
+    color: palette.text,
+    fontSize: 20,
+    fontWeight: "800",
+  },
+  templateText: {
+    color: palette.textSoft,
+    lineHeight: 21,
   },
   card: {
-    backgroundColor: "white",
-    borderRadius: 24,
-    padding: 18,
-    shadowColor: "#000",
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 4,
-    gap: 12,
+    gap: 16,
   },
   row: {
     flexDirection: "row",
     gap: 12,
+    flexWrap: "wrap",
   },
   field: {
     flex: 1,
+    minWidth: 160,
+    gap: 8,
+  },
+  fieldHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 8,
   },
   label: {
     fontSize: 14,
-    fontWeight: "600",
-    color: "#334155",
-    marginBottom: 8,
+    fontWeight: "700",
+    color: palette.textSoft,
+  },
+  helper: {
+    color: palette.textMuted,
+    fontSize: 12,
   },
   input: {
     borderWidth: 1,
-    borderColor: "#fbcfe8",
-    backgroundColor: "#fff",
-    borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    borderColor: palette.border,
+    backgroundColor: palette.panelSoft,
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
     fontSize: 15,
-    color: "#0f172a",
+    color: palette.text,
   },
   notesInput: {
-    minHeight: 90,
-    borderRadius: 20,
+    minHeight: 96,
     textAlignVertical: "top",
   },
-  primaryButton: {
-    backgroundColor: "#ec4899",
-    borderRadius: 999,
-    paddingVertical: 15,
-    marginTop: 8,
+  chipWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
   },
-  primaryButtonText: {
-    color: "white",
-    textAlign: "center",
+  templateHintBox: {
+    minHeight: 48,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: "rgba(255, 255, 255, 0.04)",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+  },
+  templateHintText: {
+    color: palette.text,
     fontWeight: "700",
-    fontSize: 16,
   },
 });

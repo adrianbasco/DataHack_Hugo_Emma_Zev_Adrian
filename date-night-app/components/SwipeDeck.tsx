@@ -1,15 +1,16 @@
 import React, { useMemo, useRef, useState } from "react";
 import {
-  View,
-  Text,
+  Animated,
+  Dimensions,
   Image,
+  PanResponder,
   Pressable,
   StyleSheet,
-  Animated,
-  PanResponder,
-  Dimensions,
+  Text,
+  View,
 } from "react-native";
 import { Plan } from "../lib/types";
+import { ActionButton, SurfaceCard, palette } from "./ui";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 const SWIPE_THRESHOLD = 120;
@@ -35,7 +36,7 @@ export default function SwipeDeck({
 
   const rotate = position.x.interpolate({
     inputRange: [-SCREEN_WIDTH, 0, SCREEN_WIDTH],
-    outputRange: ["-18deg", "0deg", "18deg"],
+    outputRange: ["-16deg", "0deg", "16deg"],
     extrapolate: "clamp",
   });
 
@@ -62,6 +63,7 @@ export default function SwipeDeck({
     Animated.spring(position, {
       toValue: { x: 0, y: 0 },
       useNativeDriver: false,
+      friction: 5,
     }).start();
   }
 
@@ -69,7 +71,9 @@ export default function SwipeDeck({
     const swipedPlan = plans[currentIndex];
 
     if (direction === "right" && swipedPlan) {
-      onSavePlan(swipedPlan);
+      Promise.resolve(onSavePlan(swipedPlan)).catch((error: unknown) => {
+        console.error("Failed to save swiped plan.", error);
+      });
     }
 
     position.setValue({ x: 0, y: 0 });
@@ -98,11 +102,10 @@ export default function SwipeDeck({
 
   const panResponder = useRef(
     PanResponder.create({
-      onMoveShouldSetPanResponder: (_evt, gestureState) => {
-        return Math.abs(gestureState.dx) > 8 || Math.abs(gestureState.dy) > 8;
-      },
+      onMoveShouldSetPanResponder: (_evt, gestureState) =>
+        Math.abs(gestureState.dx) > 8 || Math.abs(gestureState.dy) > 8,
       onPanResponderMove: (_evt, gestureState) => {
-        position.setValue({ x: gestureState.dx, y: gestureState.dy * 0.2 });
+        position.setValue({ x: gestureState.dx, y: gestureState.dy * 0.18 });
       },
       onPanResponderRelease: (_evt, gestureState) => {
         if (gestureState.dx > SWIPE_THRESHOLD) {
@@ -118,12 +121,12 @@ export default function SwipeDeck({
 
   if (!currentPlan) {
     return (
-      <View style={styles.emptyWrap}>
-        <Text style={styles.emptyTitle}>No more plans</Text>
+      <SurfaceCard style={styles.emptyWrap}>
+        <Text style={styles.emptyTitle}>Deck complete</Text>
         <Text style={styles.emptyText}>
-          You’ve reached the end of the deck.
+          You made it through the current plan set. Open saved dates to revisit the winners.
         </Text>
-      </View>
+      </SurfaceCard>
     );
   }
 
@@ -136,8 +139,9 @@ export default function SwipeDeck({
               <Image source={{ uri: nextPlan.heroImageUrl }} style={styles.image} />
             ) : null}
             <View style={styles.cardBody}>
+              <Text style={styles.kicker}>Up next</Text>
               <Text style={styles.title}>{nextPlan.title}</Text>
-              <Text style={styles.subtitle}>{nextPlan.vibeLine}</Text>
+              <Text style={styles.subtitle}>{nextPlan.hook}</Text>
             </View>
           </View>
         ) : null}
@@ -146,7 +150,7 @@ export default function SwipeDeck({
           style={[styles.card, animatedCardStyle]}
           {...panResponder.panHandlers}
         >
-          <Pressable style={{ flex: 1 }} onPress={() => onOpenPlan(currentPlan)}>
+          <Pressable style={styles.cardPressable} onPress={() => onOpenPlan(currentPlan)}>
             {currentPlan.heroImageUrl ? (
               <Image source={{ uri: currentPlan.heroImageUrl }} style={styles.image} />
             ) : null}
@@ -160,44 +164,65 @@ export default function SwipeDeck({
             </Animated.View>
 
             <View style={styles.cardBody}>
+              <Text style={styles.kicker}>
+                {currentPlan.templateHint || "Planner suggestion"}
+              </Text>
               <Text style={styles.title}>{currentPlan.title}</Text>
-              <Text style={styles.subtitle}>{currentPlan.vibeLine}</Text>
+              <Text style={styles.subtitle}>{currentPlan.hook}</Text>
 
               <View style={styles.metaRow}>
-                <Text style={styles.metaText}>{currentPlan.durationLabel}</Text>
-                <Text style={styles.metaDot}>•</Text>
-                <Text style={styles.metaText}>{currentPlan.costBand}</Text>
-                {currentPlan.weather ? (
-                  <>
-                    <Text style={styles.metaDot}>•</Text>
-                    <Text style={styles.metaText}>{currentPlan.weather}</Text>
-                  </>
+                {currentPlan.durationLabel ? <MetaPill label={currentPlan.durationLabel} /> : null}
+                {currentPlan.costBand ? <MetaPill label={currentPlan.costBand} /> : null}
+                {currentPlan.weather ? <MetaPill label={currentPlan.weather} tone="cool" /> : null}
+                {currentPlan.mapsVerificationNeeded ? (
+                  <MetaPill label="Check maps" tone="cool" />
                 ) : null}
               </View>
 
               <View style={styles.stopList}>
                 {currentPlan.stops.slice(0, 3).map((stop, index) => (
-                  <Text key={stop.id} style={styles.stopText}>
-                    {index + 1}. {stop.name}
-                  </Text>
+                  <View key={stop.id} style={styles.stopRow}>
+                    <Text style={styles.stopIndex}>{index + 1}</Text>
+                    <Text style={styles.stopText}>{stop.name}</Text>
+                  </View>
                 ))}
               </View>
 
-              <Text style={styles.tapHint}>Tap card for details</Text>
+              <Text style={styles.tapHint}>Tap the card for full detail and booking handoff.</Text>
             </View>
           </Pressable>
         </Animated.View>
       </View>
 
       <View style={styles.actions}>
-        <Pressable style={styles.skipButton} onPress={() => forceSwipe("left")}>
-          <Text style={styles.skipButtonText}>Skip</Text>
-        </Pressable>
-
-        <Pressable style={styles.saveButton} onPress={() => forceSwipe("right")}>
-          <Text style={styles.saveButtonText}>Save</Text>
-        </Pressable>
+        <ActionButton
+          label="Skip"
+          variant="secondary"
+          onPress={() => forceSwipe("left")}
+          style={styles.actionButton}
+        />
+        <ActionButton
+          label="Save plan"
+          onPress={() => forceSwipe("right")}
+          style={styles.actionButton}
+        />
       </View>
+    </View>
+  );
+}
+
+function MetaPill({
+  label,
+  tone = "default",
+}: {
+  label: string;
+  tone?: "default" | "cool";
+}) {
+  return (
+    <View style={[styles.metaPill, tone === "cool" && styles.metaPillCool]}>
+      <Text style={[styles.metaPillText, tone === "cool" && styles.metaPillTextCool]}>
+        {label}
+      </Text>
     </View>
   );
 }
@@ -205,156 +230,166 @@ export default function SwipeDeck({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    gap: 16,
   },
   deckArea: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    minHeight: 560,
+    minHeight: 580,
   },
   card: {
     width: "100%",
-    maxWidth: 380,
-    backgroundColor: "white",
-    borderRadius: 28,
+    maxWidth: 420,
+    backgroundColor: palette.panel,
+    borderRadius: 30,
     overflow: "hidden",
     position: "absolute",
-    shadowColor: "#000",
-    shadowOpacity: 0.12,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 6,
+    borderWidth: 1,
+    borderColor: palette.border,
+    shadowColor: "#020617",
+    shadowOpacity: 0.34,
+    shadowRadius: 28,
+    shadowOffset: { width: 0, height: 16 },
+    elevation: 10,
+  },
+  cardPressable: {
+    flex: 1,
   },
   nextCard: {
-    transform: [{ scale: 0.96 }, { translateY: 8 }],
-    opacity: 0.55,
+    transform: [{ scale: 0.96 }, { translateY: 14 }],
+    opacity: 0.5,
   },
   image: {
     width: "100%",
-    height: 280,
+    height: 292,
   },
   cardBody: {
-    padding: 18,
+    padding: 20,
+    gap: 12,
+  },
+  kicker: {
+    color: palette.accentWarm,
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
   },
   title: {
-    fontSize: 24,
-    fontWeight: "700",
-    color: "#881337",
-    marginBottom: 6,
+    fontSize: 28,
+    lineHeight: 33,
+    fontWeight: "900",
+    color: palette.text,
   },
   subtitle: {
     fontSize: 15,
-    color: "#475569",
-    marginBottom: 12,
+    lineHeight: 22,
+    color: palette.textMuted,
   },
   metaRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    alignItems: "center",
-    marginBottom: 12,
+    gap: 10,
   },
-  metaText: {
-    fontSize: 13,
-    color: "#64748b",
+  metaPill: {
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    borderWidth: 1,
+    borderColor: palette.border,
   },
-  metaDot: {
-    color: "#cbd5e1",
-    marginHorizontal: 6,
+  metaPillCool: {
+    backgroundColor: "rgba(52, 211, 153, 0.12)",
+    borderColor: "rgba(52, 211, 153, 0.24)",
+  },
+  metaPillText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: palette.textSoft,
+  },
+  metaPillTextCool: {
+    color: "#b4f5dd",
   },
   stopList: {
-    gap: 6,
-    marginBottom: 14,
+    gap: 10,
+  },
+  stopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  stopIndex: {
+    width: 24,
+    color: palette.accent,
+    fontWeight: "900",
   },
   stopText: {
-    color: "#334155",
+    color: palette.textSoft,
     fontSize: 14,
+    flex: 1,
   },
   tapHint: {
-    marginTop: 4,
-    color: "#be185d",
+    color: palette.accentWarm,
     fontSize: 13,
-    fontWeight: "600",
+    fontWeight: "700",
   },
   actions: {
     flexDirection: "row",
     gap: 12,
-    paddingTop: 16,
-    paddingBottom: 10,
+    paddingBottom: 8,
   },
-  skipButton: {
+  actionButton: {
     flex: 1,
-    backgroundColor: "white",
-    borderRadius: 999,
-    paddingVertical: 15,
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-  },
-  skipButtonText: {
-    textAlign: "center",
-    color: "#475569",
-    fontWeight: "700",
-    fontSize: 16,
-  },
-  saveButton: {
-    flex: 1,
-    backgroundColor: "#ec4899",
-    borderRadius: 999,
-    paddingVertical: 15,
-  },
-  saveButtonText: {
-    textAlign: "center",
-    color: "white",
-    fontWeight: "700",
-    fontSize: 16,
   },
   likeBadge: {
     position: "absolute",
     top: 24,
-    right: 20,
-    borderWidth: 3,
-    borderColor: "#16a34a",
+    right: 18,
+    borderWidth: 2,
+    borderColor: palette.success,
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 12,
-    transform: [{ rotate: "12deg" }],
-    backgroundColor: "rgba(255,255,255,0.9)",
+    transform: [{ rotate: "10deg" }],
+    backgroundColor: "rgba(7, 17, 31, 0.84)",
   },
   likeBadgeText: {
-    color: "#16a34a",
-    fontWeight: "800",
+    color: "#a7f3d0",
+    fontWeight: "900",
     fontSize: 18,
   },
   nopeBadge: {
     position: "absolute",
     top: 24,
-    left: 20,
-    borderWidth: 3,
-    borderColor: "#ef4444",
+    left: 18,
+    borderWidth: 2,
+    borderColor: palette.danger,
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 12,
-    transform: [{ rotate: "-12deg" }],
-    backgroundColor: "rgba(255,255,255,0.9)",
+    transform: [{ rotate: "-10deg" }],
+    backgroundColor: "rgba(7, 17, 31, 0.84)",
   },
   nopeBadgeText: {
-    color: "#ef4444",
-    fontWeight: "800",
+    color: "#fecdd3",
+    fontWeight: "900",
     fontSize: 18,
   },
   emptyWrap: {
-    flex: 1,
-    justifyContent: "center",
     alignItems: "center",
-    paddingVertical: 80,
+    gap: 10,
+    paddingVertical: 36,
   },
   emptyTitle: {
     fontSize: 24,
-    fontWeight: "700",
-    marginBottom: 8,
-    color: "#881337",
+    fontWeight: "900",
+    color: palette.text,
   },
   emptyText: {
-    color: "#64748b",
+    color: palette.textMuted,
     fontSize: 15,
+    lineHeight: 22,
+    textAlign: "center",
   },
 });
