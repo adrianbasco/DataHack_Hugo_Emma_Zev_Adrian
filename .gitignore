@@ -42,6 +42,8 @@ Thumbs.db
 
 # Data
 data/
+datasets/
+!datasets/.gitkeep
 
 date-night-app/.expo/
 date-night-app/node_modules/

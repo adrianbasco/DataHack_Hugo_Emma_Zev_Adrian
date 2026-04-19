@@ -1,6 +1,7 @@
-import { View, Text } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import InputForm from "../components/InputForm";
+import { ActionButton, ScreenShell, SurfaceCard, palette } from "../components/ui";
 import { GenerateRequest } from "../lib/types";
 
 export default function HomeScreen() {
@@ -16,9 +17,46 @@ export default function HomeScreen() {
   }
 
   return (
-    <View style={{ flex: 1 }}>
-      <Text style={{ fontSize: 24, fontWeight: "600", padding: 16 }}>Plan a date night</Text>
+    <ScreenShell scroll contentContainerStyle={styles.container}>
       <InputForm onSubmit={handleSubmit} />
-    </View>
+
+      <SurfaceCard style={styles.savedCard}>
+        <View style={styles.savedCopy}>
+          <Text style={styles.savedTitle}>Already found a winner?</Text>
+          <Text style={styles.savedText}>
+            Jump back into your saved plans and revisit the best contenders.
+          </Text>
+        </View>
+
+        <ActionButton
+          label="Open saved dates"
+          variant="secondary"
+          onPress={() => router.push("/saved")}
+        />
+      </SurfaceCard>
+    </ScreenShell>
   );
 }
+
+const styles = StyleSheet.create({
+  container: {
+    gap: 18,
+  },
+  savedCard: {
+    gap: 14,
+    marginBottom: 12,
+  },
+  savedCopy: {
+    gap: 6,
+  },
+  savedTitle: {
+    color: palette.text,
+    fontSize: 20,
+    fontWeight: "800",
+  },
+  savedText: {
+    color: palette.textMuted,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+});

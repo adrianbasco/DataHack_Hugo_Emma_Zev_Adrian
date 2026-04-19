@@ -16,8 +16,10 @@ export type GenerateRequest = {
 export type Stop = {
   id: string;
   name: string;
+  description?: string;
+  time?: string;
+  transport?: string;
   mapsUrl?: string;
-  imageUrl?: string;
 };
 
 export type TransportLeg = {
@@ -32,7 +34,8 @@ export type Plan = {
   heroImageUrl?: string;
   durationLabel: string;
   costBand: string;
+  weather?: string;
+  summary?: string;
   stops: Stop[];
   transportLegs?: TransportLeg[];
-  summary?: string;
 };

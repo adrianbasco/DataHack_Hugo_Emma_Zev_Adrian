@@ -1,0 +1,145 @@
+# Date Night — Foursquare category allowlist, grouped by "vibe".
+#
+# Each entry under a vibe is the FULL PATH label of a Foursquare category
+# (e.g. "Dining and Drinking > Restaurant"). These paths match the
+# `category_label` column of data/categories.parquet exactly.
+#
+# The builder (`back_end/catalog/categories.py`) expands each path to
+# include ALL descendants in the Foursquare taxonomy. So listing
+# "Dining and Drinking > Restaurant" automatically includes Italian,
+# Thai, Brazilian, etc.
+#
+# An unknown path here is a FATAL error — the loader refuses to run.
+# This is intentional: we'd rather fail loudly than silently drop vibes.
+#
+# Vibes available: romantic, foodie, nightlife, nerdy, outdoorsy, active, casual.
+# The master "date-worthy" set is the union of all vibes.
+
+vibes:
+
+  romantic:
+    - "Dining and Drinking > Restaurant"
+    - "Dining and Drinking > Cafe, Coffee, and Tea House"
+    - "Dining and Drinking > Winery"
+    - "Dining and Drinking > Dessert Shop"
+    - "Dining and Drinking > Bar"
+    - "Arts and Entertainment > Art Gallery"
+    - "Arts and Entertainment > Museum"
+    - "Arts and Entertainment > Performing Arts Venue"
+    - "Arts and Entertainment > Movie Theater"
+    - "Arts and Entertainment > Aquarium"
+    - "Landmarks and Outdoors > Scenic Lookout"
+    - "Landmarks and Outdoors > Beach"
+    - "Landmarks and Outdoors > Botanical Garden"
+    - "Landmarks and Outdoors > Sculpture Garden"
+    - "Landmarks and Outdoors > Park"
+    - "Landmarks and Outdoors > Boardwalk"
+    - "Landmarks and Outdoors > Harbor or Marina"
+    - "Landmarks and Outdoors > Lighthouse"
+    - "Landmarks and Outdoors > Waterfall"
+    - "Travel and Transportation > Pier"
+
+  foodie:
+    - "Dining and Drinking > Restaurant"
+    - "Dining and Drinking > Cafe, Coffee, and Tea House"
+    - "Dining and Drinking > Bakery"
+    - "Dining and Drinking > Dessert Shop"
+    - "Dining and Drinking > Brewery"
+    - "Dining and Drinking > Distillery"
+    - "Dining and Drinking > Winery"
+    - "Dining and Drinking > Food Truck"
+    - "Dining and Drinking > Snack Place"
+    - "Dining and Drinking > Donut Shop"
+    - "Dining and Drinking > Night Market"
+    - "Retail > Food and Beverage Retail > Farmers Market"
+    - "Retail > Food and Beverage Retail > Fish Market"
+
+  nightlife:
+    - "Nightlife Spot"
+    - "Dining and Drinking > Bar"
+    - "Dining and Drinking > Brewery"
+    - "Dining and Drinking > Distillery"
+    - "Arts and Entertainment > Comedy Club"
+    - "Arts and Entertainment > Dance Hall"
+    - "Arts and Entertainment > Country Dance Club"
+    - "Arts and Entertainment > Casino"
+    - "Arts and Entertainment > Performing Arts Venue"
+    - "Arts and Entertainment > Movie Theater"
+    - "Arts and Entertainment > Pool Hall"
+
+  nerdy:
+    - "Arts and Entertainment > Museum"
+    - "Arts and Entertainment > Art Gallery"
+    - "Arts and Entertainment > Planetarium"
+    - "Arts and Entertainment > Aquarium"
+    - "Arts and Entertainment > Zoo"
+    - "Arts and Entertainment > Exhibit"
+    - "Arts and Entertainment > Public Art"
+    - "Arts and Entertainment > Gaming Cafe"
+    - "Arts and Entertainment > VR Cafe"
+    - "Arts and Entertainment > Arcade"
+    - "Arts and Entertainment > Escape Room"
+    - "Retail > Bookstore"
+    - "Retail > Comic Book Store"
+    - "Community and Government > Library"
+    - "Landmarks and Outdoors > Historic and Protected Site"
+    - "Landmarks and Outdoors > Archaeological Site"
+
+  outdoorsy:
+    - "Landmarks and Outdoors > Park"
+    - "Landmarks and Outdoors > Beach"
+    - "Landmarks and Outdoors > Scenic Lookout"
+    - "Landmarks and Outdoors > Boardwalk"
+    - "Landmarks and Outdoors > Botanical Garden"
+    - "Landmarks and Outdoors > Sculpture Garden"
+    - "Landmarks and Outdoors > Nature Preserve"
+    - "Landmarks and Outdoors > Nature Trail"
+    - "Landmarks and Outdoors > Hiking Trail"
+    - "Landmarks and Outdoors > Bike Trail"
+    - "Landmarks and Outdoors > Waterfall"
+    - "Landmarks and Outdoors > Harbor or Marina"
+    - "Landmarks and Outdoors > Lighthouse"
+    - "Landmarks and Outdoors > Cave"
+    - "Landmarks and Outdoors > Hot Spring"
+    - "Landmarks and Outdoors > Island"
+    - "Landmarks and Outdoors > Bay"
+    - "Landmarks and Outdoors > Historic and Protected Site"
+    - "Landmarks and Outdoors > Plaza"
+    - "Travel and Transportation > Pier"
+    - "Sports and Recreation > Fishing Area"
+
+  active:
+    - "Arts and Entertainment > Bowling Alley"
+    - "Arts and Entertainment > Mini Golf Course"
+    - "Arts and Entertainment > Laser Tag Center"
+    - "Arts and Entertainment > Escape Room"
+    - "Arts and Entertainment > Go Kart Track"
+    - "Arts and Entertainment > Roller Rink"
+    - "Arts and Entertainment > Pool Hall"
+    - "Arts and Entertainment > Disc Golf Course"
+    - "Arts and Entertainment > Amusement Park"
+    - "Arts and Entertainment > Water Park"
+    - "Sports and Recreation > Skating"
+    - "Sports and Recreation > Water Sports"
+    - "Sports and Recreation > Snow Sports"
+    - "Sports and Recreation > Indoor Play Area"
+    - "Landmarks and Outdoors > Hiking Trail"
+    - "Landmarks and Outdoors > Bike Trail"
+
+  casual:
+    - "Dining and Drinking > Cafe, Coffee, and Tea House"
+    - "Dining and Drinking > Bakery"
+    - "Dining and Drinking > Dessert Shop"
+    - "Dining and Drinking > Food Truck"
+    - "Dining and Drinking > Snack Place"
+    - "Dining and Drinking > Restaurant"
+    - "Retail > Bookstore"
+    - "Retail > Flea Market"
+    - "Retail > Market"
+    - "Retail > Food and Beverage Retail > Farmers Market"
+    - "Arts and Entertainment > Movie Theater"
+    - "Arts and Entertainment > Arcade"
+    - "Arts and Entertainment > Bowling Alley"
+    - "Landmarks and Outdoors > Park"
+    - "Landmarks and Outdoors > Beach"
+    - "Landmarks and Outdoors > Boardwalk"
