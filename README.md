@@ -1,5 +1,13 @@
 # DataHack_Hugo_Emma_Zev_Adrian
 
+API RUN
+python scripts/run_frontend_api.py
+
+EXPO RUN
+cd date-night-app
+npm start -- --lan
+
+
 
 **LLM GENERATED**
 
