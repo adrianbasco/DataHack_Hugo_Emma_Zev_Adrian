@@ -14,18 +14,33 @@ class WeatherConfigurationError(RuntimeError):
     """Raised when weather-backed code is configured incorrectly."""
 
 
-def _read_float(name: str, default: float) -> float:
+class OpenRouterConfigurationError(RuntimeError):
+    """Raised when OpenRouter-backed code is configured incorrectly."""
+
+
+class BraveConfigurationError(RuntimeError):
+    """Raised when Brave-backed code is configured incorrectly."""
+
+
+class BlandAIConfigurationError(RuntimeError):
+    """Raised when Bland AI-backed code is configured incorrectly."""
+
+
+def _read_float(
+    name: str,
+    default: float,
+    *,
+    error_cls: type[RuntimeError] = MapsConfigurationError,
+) -> float:
     raw = os.getenv(name)
     if raw is None or raw == "":
         return default
     try:
         value = float(raw)
     except ValueError as exc:
-        raise MapsConfigurationError(
-            f"{name} must be a float, got {raw!r}."
-        ) from exc
+        raise error_cls(f"{name} must be a float, got {raw!r}.") from exc
     if value <= 0:
-        raise MapsConfigurationError(f"{name} must be positive, got {value}.")
+        raise error_cls(f"{name} must be positive, got {value}.")
     return value
 
 
@@ -34,6 +49,7 @@ def _read_optional_float(
     *,
     minimum: float | None = None,
     maximum: float | None = None,
+    error_cls: type[RuntimeError] = WeatherConfigurationError,
 ) -> float | None:
     raw = os.getenv(name)
     if raw is None or raw == "":
@@ -41,17 +57,11 @@ def _read_optional_float(
     try:
         value = float(raw)
     except ValueError as exc:
-        raise WeatherConfigurationError(
-            f"{name} must be a float, got {raw!r}."
-        ) from exc
+        raise error_cls(f"{name} must be a float, got {raw!r}.") from exc
     if minimum is not None and value < minimum:
-        raise WeatherConfigurationError(
-            f"{name} must be >= {minimum}, got {value}."
-        )
+        raise error_cls(f"{name} must be >= {minimum}, got {value}.")
     if maximum is not None and value > maximum:
-        raise WeatherConfigurationError(
-            f"{name} must be <= {maximum}, got {value}."
-        )
+        raise error_cls(f"{name} must be <= {maximum}, got {value}.")
     return value
 
 
@@ -60,6 +70,7 @@ def _read_optional_int(
     *,
     minimum: int | None = None,
     maximum: int | None = None,
+    error_cls: type[RuntimeError] = WeatherConfigurationError,
 ) -> int | None:
     raw = os.getenv(name)
     if raw is None or raw == "":
@@ -67,35 +78,56 @@ def _read_optional_int(
     try:
         value = int(raw)
     except ValueError as exc:
-        raise WeatherConfigurationError(
-            f"{name} must be an integer, got {raw!r}."
-        ) from exc
+        raise error_cls(f"{name} must be an integer, got {raw!r}.") from exc
     if minimum is not None and value < minimum:
-        raise WeatherConfigurationError(
-            f"{name} must be >= {minimum}, got {value}."
-        )
+        raise error_cls(f"{name} must be >= {minimum}, got {value}.")
     if maximum is not None and value > maximum:
-        raise WeatherConfigurationError(
-            f"{name} must be <= {maximum}, got {value}."
-        )
+        raise error_cls(f"{name} must be <= {maximum}, got {value}.")
     return value
 
 
-def _read_int(name: str, default: int, *, minimum: int = 0) -> int:
+def _read_int(
+    name: str,
+    default: int,
+    *,
+    minimum: int = 0,
+    error_cls: type[RuntimeError] = MapsConfigurationError,
+) -> int:
     raw = os.getenv(name)
     if raw is None or raw == "":
         return default
     try:
         value = int(raw)
     except ValueError as exc:
-        raise MapsConfigurationError(
-            f"{name} must be an integer, got {raw!r}."
-        ) from exc
+        raise error_cls(f"{name} must be an integer, got {raw!r}.") from exc
     if value < minimum:
-        raise MapsConfigurationError(
-            f"{name} must be >= {minimum}, got {value}."
-        )
+        raise error_cls(f"{name} must be >= {minimum}, got {value}.")
     return value
+
+
+def _read_optional_string(name: str) -> str | None:
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    value = raw.strip()
+    return value or None
+
+
+def _read_bool(
+    name: str,
+    default: bool,
+    *,
+    error_cls: type[RuntimeError] = MapsConfigurationError,
+) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise error_cls(f"{name} must be a boolean, got {raw!r}.")
 
 
 @dataclass(frozen=True)
@@ -192,8 +224,17 @@ class WeatherSettings:
             forecast_base_url=(
                 os.getenv("WEATHER_FORECAST_BASE_URL") or "https://api.open-meteo.com/v1"
             ),
-            timeout_seconds=_read_float("WEATHER_TIMEOUT_SECONDS", 10.0),
-            retry_count=_read_int("WEATHER_RETRY_COUNT", 1, minimum=0),
+            timeout_seconds=_read_float(
+                "WEATHER_TIMEOUT_SECONDS",
+                10.0,
+                error_cls=WeatherConfigurationError,
+            ),
+            retry_count=_read_int(
+                "WEATHER_RETRY_COUNT",
+                1,
+                minimum=0,
+                error_cls=WeatherConfigurationError,
+            ),
             max_forecast_days=max_forecast_days or 14,
             hourly_precipitation_mm_threshold=(
                 _read_optional_float(
@@ -218,5 +259,162 @@ class WeatherSettings:
                     minimum=0.0,
                 )
                 or 40.0
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class OpenRouterSettings:
+    """Settings for OpenRouter chat completions and tool use."""
+
+    api_key: str
+    base_url: str = "https://openrouter.ai/api/v1"
+    default_model: str | None = None
+    timeout_seconds: float = 45.0
+    retry_count: int = 1
+    max_tool_round_trips: int = 8
+    http_referer: str | None = None
+    app_title: str | None = None
+
+    @classmethod
+    def from_env(cls) -> "OpenRouterSettings":
+        """Load OpenRouter settings from environment variables."""
+
+        api_key = _read_optional_string("OPENROUTER_API_KEY")
+        if api_key is None:
+            raise OpenRouterConfigurationError(
+                "OPENROUTER_API_KEY is required for OpenRouter client calls."
+            )
+
+        return cls(
+            api_key=api_key,
+            base_url=(
+                _read_optional_string("OPENROUTER_BASE_URL")
+                or "https://openrouter.ai/api/v1"
+            ),
+            default_model=_read_optional_string("OPENROUTER_MODEL"),
+            timeout_seconds=_read_float(
+                "OPENROUTER_TIMEOUT_SECONDS",
+                45.0,
+                error_cls=OpenRouterConfigurationError,
+            ),
+            retry_count=_read_int(
+                "OPENROUTER_RETRY_COUNT",
+                1,
+                minimum=0,
+                error_cls=OpenRouterConfigurationError,
+            ),
+            max_tool_round_trips=_read_int(
+                "OPENROUTER_MAX_TOOL_ROUND_TRIPS",
+                8,
+                minimum=1,
+                error_cls=OpenRouterConfigurationError,
+            ),
+            http_referer=_read_optional_string("OPENROUTER_HTTP_REFERER"),
+            app_title=_read_optional_string("OPENROUTER_APP_TITLE"),
+        )
+
+
+@dataclass(frozen=True)
+class BraveSettings:
+    """Settings for Brave Search API calls."""
+
+    api_key: str
+    base_url: str = "https://api.search.brave.com/res/v1"
+    timeout_seconds: float = 15.0
+    retry_count: int = 1
+    country: str = "AU"
+    search_lang: str = "en"
+    ui_lang: str = "en-AU"
+
+    @classmethod
+    def from_env(cls) -> "BraveSettings":
+        """Load Brave Search settings from environment variables."""
+
+        api_key = _read_optional_string("BRAVE_API_KEY")
+        if api_key is None:
+            raise BraveConfigurationError(
+                "BRAVE_API_KEY is required for Brave Search client calls."
+            )
+
+        return cls(
+            api_key=api_key,
+            base_url=(
+                _read_optional_string("BRAVE_BASE_URL")
+                or "https://api.search.brave.com/res/v1"
+            ),
+            timeout_seconds=_read_float(
+                "BRAVE_TIMEOUT_SECONDS",
+                15.0,
+                error_cls=BraveConfigurationError,
+            ),
+            retry_count=_read_int(
+                "BRAVE_RETRY_COUNT",
+                1,
+                minimum=0,
+                error_cls=BraveConfigurationError,
+            ),
+            country=_read_optional_string("BRAVE_COUNTRY") or "AU",
+            search_lang=_read_optional_string("BRAVE_SEARCH_LANG") or "en",
+            ui_lang=_read_optional_string("BRAVE_UI_LANG") or "en-AU",
+        )
+
+
+@dataclass(frozen=True)
+class BlandAISettings:
+    """Settings for Bland AI outbound restaurant booking calls."""
+
+    api_key: str
+    base_url: str = "https://api.bland.ai/v1"
+    timeout_seconds: float = 20.0
+    status_retry_count: int = 1
+    default_voice: str | None = None
+    language: str = "en-AU"
+    timezone: str = "Australia/Sydney"
+    model: str = "base"
+    max_duration_minutes: int = 8
+    record_calls: bool = False
+
+    @classmethod
+    def from_env(cls) -> "BlandAISettings":
+        """Load Bland AI settings from environment variables."""
+
+        api_key = _read_optional_string("BLAND_AI_API_KEY")
+        if api_key is None:
+            raise BlandAIConfigurationError(
+                "BLAND_AI_API_KEY is required for Bland AI client calls."
+            )
+
+        return cls(
+            api_key=api_key,
+            base_url=(
+                _read_optional_string("BLAND_AI_BASE_URL")
+                or "https://api.bland.ai/v1"
+            ),
+            timeout_seconds=_read_float(
+                "BLAND_AI_TIMEOUT_SECONDS",
+                20.0,
+                error_cls=BlandAIConfigurationError,
+            ),
+            status_retry_count=_read_int(
+                "BLAND_AI_STATUS_RETRY_COUNT",
+                1,
+                minimum=0,
+                error_cls=BlandAIConfigurationError,
+            ),
+            default_voice=_read_optional_string("BLAND_AI_DEFAULT_VOICE"),
+            language=_read_optional_string("BLAND_AI_LANGUAGE") or "en-AU",
+            timezone=_read_optional_string("BLAND_AI_TIMEZONE") or "Australia/Sydney",
+            model=_read_optional_string("BLAND_AI_MODEL") or "base",
+            max_duration_minutes=_read_int(
+                "BLAND_AI_MAX_DURATION_MINUTES",
+                8,
+                minimum=1,
+                error_cls=BlandAIConfigurationError,
+            ),
+            record_calls=_read_bool(
+                "BLAND_AI_RECORD_CALLS",
+                False,
+                error_cls=BlandAIConfigurationError,
             ),
         )

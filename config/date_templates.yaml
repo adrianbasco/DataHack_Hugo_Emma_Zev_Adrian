@@ -1,0 +1,616 @@
+# Date Night — date templates.
+#
+# These are location-agnostic sequences ("arcs") a couple might genuinely want
+# to go on. They describe the *shape* of the date, not the venues or cities:
+# the planning layer fills in concrete places from the enriched candidate pool
+# for whichever city is being served.
+#
+# Templates must be portable. No city names, suburb names, landmark names, or
+# restaurant names in this file. If an arc only works in one city, it doesn't
+# belong here — it belongs in a city-specific overlay.
+#
+# Fields per template:
+#   id              : stable slug, used by code.
+#   title           : short human name.
+#   vibe            : one or more vibes from config/date_categories.yaml
+#                     (romantic, foodie, nightlife, nerdy, outdoorsy,
+#                     active, casual). Used to pick a category allowlist.
+#   time_of_day     : morning | midday | afternoon | evening | night | flexible
+#   duration_hours  : rough target length, before travel time between stops.
+#   meaningful_variations: estimated count of distinct, genuinely good
+#                     versions of this arc in a mid-to-large city before
+#                     options start feeling samey. Supply-constrained arcs
+#                     (a single aquarium, a single amusement park, a small
+#                     set of harbour islands) get small counts on purpose —
+#                     we'd rather run out of options than generate
+#                     near-duplicates.
+#   weather_sensitive: true  => at least one stop is outdoors; weather filter
+#                               should be applied to this template.
+#                     false => indoor end-to-end, weather is a nice-to-have.
+#   description     : one-liner for prompt context / UI debugging.
+#   stops           : ordered list. Each stop is either a venue stop (a
+#                     generic type that maps to one or more Foursquare
+#                     categories) or connective tissue (walk / ferry /
+#                     picnic / sunset) which the LLM narrates.
+#
+# Venue stop `type` values are deliberately coarse — the planning layer is
+# responsible for picking the specific Foursquare category and the actual
+# place. Connective stops have `kind: connective`.
+#
+# Connective stop types:
+#   The RAG retriever hard-codes a set of stop types that are ALWAYS connective,
+#   regardless of the `kind` flag: boardwalk_or_lookout, botanical_garden,
+#   ferry_ride, harbor_or_pier, park_or_garden, scenic_lookout. These refer to
+#   public/landmark spaces that the planner narrates from local knowledge
+#   rather than pulling a specific Foursquare row. For documentation clarity,
+#   templates should still mark these stops with `kind: connective` so the
+#   YAML matches the runtime behaviour.
+#
+# Compound stop types:
+#   `bakery_or_market` means the planner may pick either a bakery (any day) or
+#   a farmers/produce market. Markets are usually weekend-morning only, so
+#   templates that effectively need the market branch will skew toward
+#   weekends; the bakery branch carries the rest of the week.
+#   Similarly `brewery_or_bar` picks whichever fits the neighbourhood better.
+#
+# Seasonal / festival arcs (light festivals, outdoor sculpture shows,
+# fireworks nights) are intentionally NOT templates here. They need
+# date-range gating the planner doesn't have yet.
+
+templates:
+
+  # ---------- MORNING ----------
+
+  - id: coffee_and_stroll
+    title: Coffee and a stroll
+    vibe: [casual, romantic]
+    time_of_day: morning
+    duration_hours: 1.5
+    meaningful_variations: 18
+    weather_sensitive: true
+    description: Slow start — good coffee, then an easy walk somewhere green or along the water.
+    stops:
+      - type: cafe
+      - type: park_or_garden
+        kind: connective
+        note: leisurely walk, no fixed venue
+
+  - id: pastries_and_waterfront_walk
+    title: Pastries and a waterfront wander
+    vibe: [foodie, casual, romantic]
+    time_of_day: morning
+    duration_hours: 2
+    meaningful_variations: 14
+    weather_sensitive: true
+    description: Start with something fresh from a bakery, then stretch the morning out with an easy waterfront walk.
+    stops:
+      - type: bakery
+      - type: harbor_or_pier
+        kind: connective
+        note: easy waterfront stroll, no fixed venue
+
+  - id: morning_swim_and_breakfast
+    title: Morning swim and breakfast
+    vibe: [outdoorsy, casual, romantic]
+    time_of_day: morning
+    duration_hours: 2.5
+    meaningful_variations: 12
+    weather_sensitive: true
+    description: Early swim at the beach or ocean pool, then breakfast at a nearby cafe.
+    stops:
+      - type: beach
+      - type: cafe
+
+  - id: ferry_to_beach_breakfast
+    title: Ferry to a beach breakfast
+    vibe: [outdoorsy, casual, romantic]
+    time_of_day: morning
+    duration_hours: 3
+    meaningful_variations: 6
+    weather_sensitive: true
+    description: "Let the ferry be part of the date: cross the harbour, swim or wander by the water, then get breakfast nearby."
+    stops:
+      - type: ferry_ride
+        kind: connective
+        note: scenic harbour ferry to a beach or ocean-pool area
+      - type: beach
+      - type: cafe
+
+  - id: brunch_and_bookstore
+    title: Brunch and a bookstore
+    vibe: [casual, nerdy, foodie]
+    time_of_day: morning
+    duration_hours: 2.5
+    meaningful_variations: 10
+    weather_sensitive: false
+    description: Long brunch, then browse a bookstore together and each pick something for the other.
+    stops:
+      - type: brunch_restaurant
+      - type: bookstore
+
+  # ---------- MIDDAY / AFTERNOON ----------
+
+  - id: coastal_walk_and_lunch
+    title: Coastal walk and lunch
+    vibe: [outdoorsy, romantic, casual]
+    time_of_day: midday
+    duration_hours: 3
+    meaningful_variations: 12
+    weather_sensitive: true
+    description: Walk a coastal path or foreshore boardwalk, then settle into a long lunch nearby.
+    stops:
+      - type: boardwalk_or_lookout
+        kind: connective
+        note: coastal/foreshore walk
+      - type: casual_restaurant
+
+  - id: gallery_and_wine_bar
+    title: Gallery and wine bar
+    vibe: [romantic, nerdy]
+    time_of_day: afternoon
+    duration_hours: 2.5
+    meaningful_variations: 9
+    weather_sensitive: false
+    description: Drift through an art gallery, then unwind over a glass of wine nearby.
+    stops:
+      - type: art_gallery
+      - type: wine_bar
+
+  - id: garden_gallery_aperitivo
+    title: Garden, gallery, aperitivo
+    vibe: [romantic, nerdy, outdoorsy]
+    time_of_day: afternoon
+    duration_hours: 3.5
+    meaningful_variations: 3
+    weather_sensitive: true
+    description: Start with a botanical garden walk, drift into an art gallery nearby, then finish with a low-key glass of wine. Needs a walkable garden-gallery cluster, which most cities only have in one or two spots.
+    stops:
+      - type: botanical_garden
+        kind: connective
+        note: slow garden walk before the gallery
+      - type: art_gallery
+      - type: wine_bar
+
+  - id: museum_coffee_bookstore
+    title: Museum, coffee, bookstore
+    vibe: [nerdy, casual, romantic]
+    time_of_day: afternoon
+    duration_hours: 3.5
+    meaningful_variations: 5
+    weather_sensitive: false
+    description: A thinking afternoon — museum exhibit, proper coffee, and a slow bookstore finish.
+    stops:
+      - type: museum
+      - type: cafe
+      - type: bookstore
+
+  - id: botanical_picnic
+    title: Botanical garden picnic
+    vibe: [romantic, outdoorsy]
+    time_of_day: afternoon
+    duration_hours: 2.5
+    meaningful_variations: 5
+    weather_sensitive: true
+    description: Grab picnic bits, find a good patch of grass in a garden, and finish with something sweet.
+    stops:
+      - type: bakery
+      - type: botanical_garden
+        kind: connective
+        note: picnic on the grass
+      - type: dessert_shop
+
+  - id: aquarium_and_harbour
+    title: Aquarium and harbour walk
+    vibe: [nerdy, romantic, casual]
+    time_of_day: afternoon
+    duration_hours: 3
+    meaningful_variations: 2
+    weather_sensitive: true
+    description: Wander an aquarium, then a slow loop around the harbour with coffee in hand.
+    stops:
+      - type: aquarium
+      - type: cafe
+      - type: harbor_or_pier
+        kind: connective
+        note: harbour walk
+
+  - id: cafe_bookstore_dessert
+    title: Cafe, bookstore, dessert
+    vibe: [casual, romantic]
+    time_of_day: afternoon
+    duration_hours: 2.5
+    meaningful_variations: 12
+    weather_sensitive: false
+    description: Coffee, a shared bookstore detour, then somewhere sweet to finish.
+    stops:
+      - type: cafe
+      - type: bookstore
+      - type: dessert_shop
+
+  # ---------- SUNSET / GOLDEN HOUR ----------
+
+  - id: sunset_lookout_and_dinner
+    title: Sunset lookout, then dinner
+    vibe: [romantic, outdoorsy]
+    time_of_day: evening
+    duration_hours: 3.5
+    meaningful_variations: 16
+    weather_sensitive: true
+    description: Catch the sunset from a scenic lookout, then a proper dinner after dark.
+    stops:
+      - type: scenic_lookout
+        kind: connective
+        note: sunset from a scenic lookout
+      - type: restaurant
+
+  - id: sunset_picnic
+    title: Sunset picnic
+    vibe: [romantic, outdoorsy]
+    time_of_day: evening
+    duration_hours: 2
+    meaningful_variations: 14
+    weather_sensitive: true
+    description: Pick up simple picnic supplies, find a good view, and watch the sun go down.
+    stops:
+      - type: bakery_or_market
+      - type: scenic_lookout
+        kind: connective
+        note: sunset picnic
+
+  - id: sunset_ferry_and_dinner
+    title: Sunset ferry, then dinner
+    vibe: [romantic, outdoorsy, foodie]
+    time_of_day: evening
+    duration_hours: 3.5
+    meaningful_variations: 10
+    weather_sensitive: true
+    description: Use a short ferry ride as the scenic opener, then head to dinner once it gets dark.
+    stops:
+      - type: ferry_ride
+        kind: connective
+        note: short harbour ferry for the view
+      - type: restaurant
+
+  - id: rooftop_then_dinner
+    title: Rooftop drinks, then dinner
+    vibe: [romantic, nightlife, foodie]
+    time_of_day: evening
+    duration_hours: 3.5
+    meaningful_variations: 12
+    weather_sensitive: true
+    description: Start the night with a drink somewhere with a view, roll into dinner once the light drops.
+    stops:
+      - type: rooftop_bar
+      - type: restaurant
+
+  # ---------- EVENING / DINNER ----------
+
+  - id: drinks_dinner_dessert
+    title: Drinks, dinner, dessert
+    vibe: [romantic, foodie]
+    time_of_day: evening
+    duration_hours: 4
+    meaningful_variations: 30
+    weather_sensitive: false
+    description: The classic — pre-dinner drinks, a proper dinner, a walk to somewhere sweet.
+    stops:
+      - type: cocktail_bar
+      - type: restaurant
+      - type: dessert_shop
+
+  - id: dinner_and_dessert_walk
+    title: Dinner and a dessert walk
+    vibe: [romantic, casual, foodie]
+    time_of_day: evening
+    duration_hours: 2.5
+    meaningful_variations: 28
+    weather_sensitive: true
+    description: A good dinner, then walk somewhere for dessert rather than staying at the table.
+    stops:
+      - type: restaurant
+      - type: dessert_shop
+
+  - id: pre_theatre_dinner_and_show
+    title: Pre-theatre dinner and a show
+    vibe: [romantic, nerdy]
+    time_of_day: evening
+    duration_hours: 4
+    meaningful_variations: 14
+    weather_sensitive: false
+    description: Early dinner, then a performance — theatre, ballet, symphony, whatever's playing.
+    stops:
+      - type: restaurant
+      - type: performing_arts_venue
+
+  - id: wharf_show_and_harbour_dessert
+    title: Wharf show and harbour dessert
+    vibe: [romantic, nerdy]
+    time_of_day: evening
+    duration_hours: 3.5
+    meaningful_variations: 3
+    weather_sensitive: true
+    description: See a performance near the water, walk through the harbour lights, then finish somewhere sweet.
+    stops:
+      - type: performing_arts_venue
+      - type: harbor_or_pier
+        kind: connective
+        note: short harbour walk after the show
+      - type: dessert_shop
+
+  - id: dinner_and_a_movie
+    title: Dinner and a movie
+    vibe: [casual, romantic]
+    time_of_day: evening
+    duration_hours: 4
+    meaningful_variations: 18
+    weather_sensitive: false
+    description: Casual dinner, then a cinema — old-school for a reason.
+    stops:
+      - type: casual_restaurant
+      - type: movie_theater
+
+  - id: wine_bar_and_shared_plates
+    title: Wine bar and shared plates
+    vibe: [romantic, foodie]
+    time_of_day: evening
+    duration_hours: 3
+    meaningful_variations: 24
+    weather_sensitive: false
+    description: Slow drinks at a wine bar, then somewhere that does shared plates nearby.
+    stops:
+      - type: wine_bar
+      - type: restaurant
+
+  - id: comedy_night
+    title: Comedy night
+    vibe: [nightlife, casual]
+    time_of_day: night
+    duration_hours: 3.5
+    meaningful_variations: 4
+    weather_sensitive: false
+    description: Casual dinner first, then a comedy club, then one last drink.
+    stops:
+      - type: casual_restaurant
+      - type: comedy_club
+      - type: bar
+
+  - id: live_music_and_late_drinks
+    title: Live music and late drinks
+    vibe: [nightlife, romantic]
+    time_of_day: night
+    duration_hours: 4
+    meaningful_variations: 14
+    weather_sensitive: false
+    description: A proper dinner, a live music set, then a last drink somewhere quieter.
+    stops:
+      - type: restaurant
+      - type: live_music_venue
+      - type: bar
+
+  # ---------- NIGHT / NIGHTLIFE ----------
+
+  - id: bar_then_harbour_walk
+    title: Small bar and a harbour walk
+    vibe: [nightlife, romantic, casual]
+    time_of_day: night
+    duration_hours: 2.5
+    meaningful_variations: 16
+    weather_sensitive: true
+    description: One genuinely good drink, then walk off the noise somewhere with harbour lights.
+    stops:
+      - type: bar
+      - type: harbor_or_pier
+        kind: connective
+        note: short harbour walk, no second venue required
+
+  - id: dinner_and_dancing
+    title: Dinner and dancing
+    vibe: [nightlife, romantic]
+    time_of_day: night
+    duration_hours: 4
+    meaningful_variations: 7
+    weather_sensitive: false
+    description: Dinner with a drink, then somewhere with a dance floor.
+    stops:
+      - type: restaurant
+      - type: dance_hall_or_club
+
+  - id: late_dessert_and_harbour_lights
+    title: Late dessert and harbour lights
+    vibe: [foodie, romantic, casual]
+    time_of_day: night
+    duration_hours: 2.5
+    meaningful_variations: 12
+    weather_sensitive: true
+    description: "Keep the night light on logistics: dessert somewhere good, then a waterside wander."
+    stops:
+      - type: dessert_shop
+      - type: harbor_or_pier
+        kind: connective
+        note: waterfront walk after dessert
+
+  # ---------- ACTIVE / PLAYFUL ----------
+
+  - id: mini_golf_food_bar
+    title: Mini golf, casual food, a drink
+    vibe: [active, casual, nightlife]
+    time_of_day: evening
+    duration_hours: 3
+    meaningful_variations: 3
+    weather_sensitive: false
+    description: Low-stakes competitive energy — mini golf, food, one drink after.
+    stops:
+      - type: mini_golf
+      - type: casual_restaurant
+      - type: bar
+
+  - id: bowling_burgers_beers
+    title: Bowling and a casual dinner
+    vibe: [active, casual, nightlife]
+    time_of_day: evening
+    duration_hours: 3
+    meaningful_variations: 5
+    weather_sensitive: false
+    description: A few bowling games, casual food, and an optional drink if the night still has legs.
+    stops:
+      - type: bowling_alley
+      - type: casual_restaurant
+      - type: brewery_or_bar
+
+  - id: arcade_date
+    title: Arcade night
+    vibe: [active, casual, nerdy]
+    time_of_day: evening
+    duration_hours: 2.5
+    meaningful_variations: 4
+    weather_sensitive: false
+    description: Arcade together, casual food after, and ice cream on the way home.
+    stops:
+      - type: arcade
+      - type: casual_restaurant
+      - type: dessert_shop
+
+  - id: escape_room_and_dinner
+    title: Escape room and dinner
+    vibe: [active, nerdy, casual]
+    time_of_day: evening
+    duration_hours: 3.5
+    meaningful_variations: 10
+    weather_sensitive: false
+    description: Solve something together, then talk about it over dinner and a drink.
+    stops:
+      - type: escape_room
+      - type: restaurant
+      - type: bar
+
+  - id: amusement_park_evening
+    title: Amusement park evening
+    vibe: [casual, nightlife, romantic, active]
+    time_of_day: evening
+    duration_hours: 3.5
+    meaningful_variations: 3
+    weather_sensitive: true
+    description: Dinner nearby, then rides and lights at an amusement park once it gets dark. Supply-constrained — most cities only have one or two amusement parks.
+    stops:
+      - type: restaurant
+      - type: amusement_park
+
+  # ---------- OUTDOORSY / DAY OUT ----------
+
+  - id: lookout_walk_and_picnic
+    title: Lookout walk and a picnic
+    vibe: [outdoorsy, romantic, active]
+    time_of_day: midday
+    duration_hours: 3.5
+    meaningful_variations: 14
+    weather_sensitive: true
+    description: Pick up something easy from a bakery, then do a harbour or clifftop walk with a picnic break.
+    stops:
+      - type: bakery
+      - type: boardwalk_or_lookout
+        kind: connective
+        note: picnic break at a lookout or grassy spot
+
+  - id: beach_day_into_seafood
+    title: Beach day into seafood dinner
+    vibe: [outdoorsy, romantic, foodie]
+    time_of_day: afternoon
+    duration_hours: 5
+    meaningful_variations: 12
+    weather_sensitive: true
+    description: Beach in the afternoon, clean up, then seafood dinner as the sun goes down.
+    stops:
+      - type: beach
+      - type: seafood_restaurant
+
+  - id: ferry_day_out
+    title: Ferry day out
+    vibe: [romantic, outdoorsy, casual]
+    time_of_day: midday
+    duration_hours: 4
+    meaningful_variations: 10
+    weather_sensitive: true
+    description: Take the ferry as part of the date, eat lunch by the water, then do a short foreshore walk before heading back.
+    stops:
+      - type: ferry_ride
+        kind: connective
+        note: ferry is the activity
+      - type: casual_restaurant
+      - type: harbor_or_pier
+        kind: connective
+        note: short foreshore walk before heading back
+
+  - id: harbour_island_picnic
+    title: Harbour island picnic
+    vibe: [romantic, outdoorsy, casual]
+    time_of_day: midday
+    duration_hours: 4
+    meaningful_variations: 3
+    weather_sensitive: true
+    description: Pick up picnic supplies, ferry out to a harbour island or tucked-away foreshore, picnic with water views, then ferry back. Supply-constrained — most harbour cities only have a handful of ferry-accessible islands.
+    stops:
+      - type: bakery_or_market
+      - type: ferry_ride
+        kind: connective
+        note: ferry out to a harbour island or quiet foreshore
+      - type: harbor_or_pier
+        kind: connective
+        note: picnic with a water view on the island
+      - type: ferry_ride
+        kind: connective
+        note: return ferry back to the city
+
+  - id: zoo_and_nearby_lunch
+    title: Zoo day and a nearby lunch
+    vibe: [outdoorsy, casual, romantic, nerdy]
+    time_of_day: midday
+    duration_hours: 5
+    meaningful_variations: 3
+    weather_sensitive: true
+    description: Wander a zoo together, then lunch somewhere close. Supply-constrained — most cities have only one major zoo.
+    stops:
+      - type: zoo
+      - type: restaurant
+
+  - id: fish_market_and_waterfront_walk
+    title: Fish market and a waterfront walk
+    vibe: [foodie, casual, romantic]
+    time_of_day: midday
+    duration_hours: 2.5
+    meaningful_variations: 2
+    weather_sensitive: true
+    description: Pick up oysters, sashimi and whatever's fresh from a seafood/fish market, eat on the deck or a nearby bench, then walk it off along the waterfront. Supply-constrained — few cities have a signature fish market.
+    stops:
+      - type: fish_market
+      - type: harbor_or_pier
+        kind: connective
+        note: waterfront walk after eating
+
+  # ---------- RAINY DAY / INDOOR ----------
+
+  - id: rainy_day_indoors
+    title: Rainy day indoors
+    vibe: [casual, nerdy, romantic]
+    time_of_day: flexible
+    duration_hours: 4
+    meaningful_variations: 12
+    weather_sensitive: false
+    description: Whole afternoon inside — bookstore, coffee, a museum, dinner to end.
+    stops:
+      - type: bookstore
+      - type: cafe
+      - type: museum
+      - type: restaurant
+
+  - id: dessert_crawl
+    title: Dessert crawl
+    vibe: [foodie, casual, romantic]
+    time_of_day: afternoon
+    duration_hours: 2
+    meaningful_variations: 16
+    weather_sensitive: false
+    description: Three small, sweet stops — a pastry, an ice cream, something chocolate.
+    stops:
+      - type: bakery
+      - type: dessert_shop
+      - type: dessert_shop

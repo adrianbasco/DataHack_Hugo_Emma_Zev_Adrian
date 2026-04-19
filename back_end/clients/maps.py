@@ -18,6 +18,8 @@ from back_end.domain.models import (
     ComputedRoute,
     LatLng,
     MapsOpeningHours,
+    MapsOpeningPeriod,
+    MapsOpeningPoint,
     MapsPlace,
     MapsPlaceMatch,
     PhotoAsset,
@@ -586,10 +588,72 @@ class GoogleMapsClient:
         open_now = raw_hours.get("openNow")
         if open_now is not None and not isinstance(open_now, bool):
             raise MapsResponseSchemaError("regularOpeningHours.openNow must be a bool.")
+        periods = self._parse_opening_periods(raw_hours.get("periods"))
         return MapsOpeningHours(
             open_now=open_now,
             weekday_descriptions=tuple(weekday_descriptions),
+            periods=periods,
         )
+
+    def _parse_opening_periods(self, raw_periods: Any) -> tuple[MapsOpeningPeriod, ...]:
+        if raw_periods is None:
+            return ()
+        if not isinstance(raw_periods, list):
+            raise MapsResponseSchemaError(
+                "regularOpeningHours.periods must be a list when present."
+            )
+        periods: list[MapsOpeningPeriod] = []
+        for raw_period in raw_periods:
+            if not isinstance(raw_period, dict):
+                raise MapsResponseSchemaError(
+                    "regularOpeningHours.periods entries must be objects."
+                )
+            raw_open = raw_period.get("open")
+            if not isinstance(raw_open, dict):
+                raise MapsResponseSchemaError(
+                    "regularOpeningHours.periods entry is missing open."
+                )
+            raw_close = raw_period.get("close")
+            if raw_close is not None and not isinstance(raw_close, dict):
+                raise MapsResponseSchemaError(
+                    "regularOpeningHours.periods close must be an object when present."
+                )
+            periods.append(
+                MapsOpeningPeriod(
+                    open=self._parse_opening_point(raw_open, label="open"),
+                    close=self._parse_opening_point(raw_close, label="close")
+                    if raw_close is not None
+                    else None,
+                )
+            )
+        return tuple(periods)
+
+    def _parse_opening_point(
+        self,
+        raw_point: dict[str, Any],
+        *,
+        label: str,
+    ) -> MapsOpeningPoint:
+        day = raw_point.get("day")
+        hour = raw_point.get("hour")
+        minute = raw_point.get("minute")
+        if isinstance(day, bool) or not isinstance(day, int) or not 0 <= day <= 6:
+            raise MapsResponseSchemaError(
+                f"regularOpeningHours.periods {label}.day must be an integer 0-6."
+            )
+        if isinstance(hour, bool) or not isinstance(hour, int) or not 0 <= hour <= 23:
+            raise MapsResponseSchemaError(
+                f"regularOpeningHours.periods {label}.hour must be an integer 0-23."
+            )
+        if (
+            isinstance(minute, bool)
+            or not isinstance(minute, int)
+            or not 0 <= minute <= 59
+        ):
+            raise MapsResponseSchemaError(
+                f"regularOpeningHours.periods {label}.minute must be an integer 0-59."
+            )
+        return MapsOpeningPoint(day=day, hour=hour, minute=minute)
 
     def _parse_photos(self, raw_photos: Any) -> tuple[PhotoAsset, ...]:
         if raw_photos is None:

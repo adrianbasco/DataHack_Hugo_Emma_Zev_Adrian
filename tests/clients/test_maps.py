@@ -427,6 +427,43 @@ class GoogleMapsClientTests(unittest.IsolatedAsyncioTestCase):
             "Route 86", route.legs[0].steps[1].transit_details.line.name
         )
 
+    async def test_compute_route_supports_bicycle_mode(self) -> None:
+        captured_body: dict[str, object] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured_body.update(json.loads(request.content.decode("utf-8")))
+            return _make_response(
+                request,
+                200,
+                {
+                    "routes": [
+                        {
+                            "distanceMeters": 1200,
+                            "duration": "360s",
+                            "staticDuration": "360s",
+                            "legs": [],
+                        }
+                    ]
+                },
+            )
+
+        client = GoogleMapsClient(
+            self.settings,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        self.addAsyncCleanup(client.aclose)
+
+        route = await client.compute_route(
+            RouteRequest(
+                origin=LatLng(latitude=-37.8136, longitude=144.9631),
+                destination=LatLng(latitude=-37.8100, longitude=144.9700),
+                travel_mode=TravelMode.BICYCLE,
+            )
+        )
+
+        self.assertEqual("BICYCLE", captured_body["travelMode"])
+        self.assertEqual(360.0, route.duration_seconds)
+
     async def test_request_retries_retryable_status_codes(self) -> None:
         attempts = {"count": 0}
 

@@ -63,11 +63,29 @@ class PhotoMedia:
 
 
 @dataclass(frozen=True)
+class MapsOpeningPoint:
+    """One opening-hours boundary from Google Places."""
+
+    day: int
+    hour: int
+    minute: int
+
+
+@dataclass(frozen=True)
+class MapsOpeningPeriod:
+    """One regular opening-hours interval from Google Places."""
+
+    open: MapsOpeningPoint
+    close: MapsOpeningPoint | None
+
+
+@dataclass(frozen=True)
 class MapsOpeningHours:
     """Subset of opening-hours data used by the backend."""
 
     open_now: bool | None
     weekday_descriptions: tuple[str, ...]
+    periods: tuple[MapsOpeningPeriod, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -103,6 +121,7 @@ class MapsPlaceMatch:
 class TravelMode(str, Enum):
     """Supported route travel modes."""
 
+    BICYCLE = "BICYCLE"
     DRIVE = "DRIVE"
     WALK = "WALK"
     TRANSIT = "TRANSIT"

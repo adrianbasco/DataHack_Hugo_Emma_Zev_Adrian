@@ -1,145 +1,186 @@
 # Date Night — Foursquare category allowlist, grouped by "vibe".
 #
-# Each entry under a vibe is the FULL PATH label of a Foursquare category
-# (e.g. "Dining and Drinking > Restaurant"). These paths match the
-# `category_label` column of data/categories.parquet exactly.
+# This file is the minimal set of Foursquare categories needed to cover every
+# template in config/date_templates.yaml. Each entry is the FULL PATH label of
+# a Foursquare category (e.g. "Dining and Drinking > Restaurant") and matches
+# the `category_label` column of data/categories.parquet exactly.
 #
-# The builder (`back_end/catalog/categories.py`) expands each path to
-# include ALL descendants in the Foursquare taxonomy. So listing
-# "Dining and Drinking > Restaurant" automatically includes Italian,
-# Thai, Brazilian, etc.
+# The builder (`back_end/catalog/categories.py`) expands each path to include
+# ALL descendants in the Foursquare taxonomy. So listing
+# "Dining and Drinking > Restaurant" automatically includes Italian, Thai,
+# Brazilian, etc.
 #
-# An unknown path here is a FATAL error — the loader refuses to run.
-# This is intentional: we'd rather fail loudly than silently drop vibes.
+# An unknown path here is a FATAL error — the loader refuses to run. This is
+# intentional: we'd rather fail loudly than silently drop vibes.
+#
+# How this file was derived:
+#   - Every stop type across every template in date_templates.yaml was mapped
+#     to one or more Foursquare category paths.
+#   - Each vibe below lists exactly the union of paths required by templates
+#     tagged with that vibe. Nothing more.
+#   - Connective stops with `note: no fixed venue` (pure narration) are not
+#     counted — they don't need candidates from the pool.
 #
 # Vibes available: romantic, foodie, nightlife, nerdy, outdoorsy, active, casual.
 # The master "date-worthy" set is the union of all vibes.
 
 vibes:
 
+  # Templates: coffee_and_stroll, morning_swim_and_breakfast, coastal_walk_and_lunch,
+  # gallery_and_wine_bar, museum_coffee_bookstore, botanical_picnic,
+  # aquarium_and_harbour, cafe_bookstore_dessert, farmers_market_cook_at_home,
+  # sunset_lookout_and_dinner, sunset_picnic, rooftop_then_dinner,
+  # drinks_dinner_dessert, dinner_and_dessert_walk, pre_theatre_dinner_and_show,
+  # dinner_and_a_movie, wine_bar_and_shared_plates, live_music_and_late_drinks,
+  # cocktail_crawl, dinner_and_dancing, hike_and_picnic, beach_day_into_seafood,
+  # ferry_day_out, rainy_day_indoors, dessert_crawl, zoo_and_nearby_lunch,
+  # amusement_park_evening, fish_market_and_waterfront_walk.
   romantic:
     - "Dining and Drinking > Restaurant"
     - "Dining and Drinking > Cafe, Coffee, and Tea House"
-    - "Dining and Drinking > Winery"
-    - "Dining and Drinking > Dessert Shop"
-    - "Dining and Drinking > Bar"
-    - "Arts and Entertainment > Art Gallery"
-    - "Arts and Entertainment > Museum"
-    - "Arts and Entertainment > Performing Arts Venue"
-    - "Arts and Entertainment > Movie Theater"
-    - "Arts and Entertainment > Aquarium"
-    - "Landmarks and Outdoors > Scenic Lookout"
-    - "Landmarks and Outdoors > Beach"
-    - "Landmarks and Outdoors > Botanical Garden"
-    - "Landmarks and Outdoors > Sculpture Garden"
-    - "Landmarks and Outdoors > Park"
-    - "Landmarks and Outdoors > Boardwalk"
-    - "Landmarks and Outdoors > Harbor or Marina"
-    - "Landmarks and Outdoors > Lighthouse"
-    - "Landmarks and Outdoors > Waterfall"
-    - "Travel and Transportation > Pier"
-
-  foodie:
-    - "Dining and Drinking > Restaurant"
-    - "Dining and Drinking > Cafe, Coffee, and Tea House"
     - "Dining and Drinking > Bakery"
     - "Dining and Drinking > Dessert Shop"
-    - "Dining and Drinking > Brewery"
-    - "Dining and Drinking > Distillery"
-    - "Dining and Drinking > Winery"
-    - "Dining and Drinking > Food Truck"
-    - "Dining and Drinking > Snack Place"
-    - "Dining and Drinking > Donut Shop"
+    - "Dining and Drinking > Bar"
+    - "Retail > Bookstore"
+    - "Retail > Food and Beverage Retail > Farmers Market"
+    - "Retail > Food and Beverage Retail > Fish Market"
+    - "Arts and Entertainment > Art Gallery"
+    - "Arts and Entertainment > Museum"
+    - "Arts and Entertainment > Aquarium"
+    - "Arts and Entertainment > Zoo"
+    - "Arts and Entertainment > Amusement Park"
+    - "Arts and Entertainment > Performing Arts Venue"
+    - "Arts and Entertainment > Movie Theater"
+    - "Arts and Entertainment > Dance Hall"
+    - "Nightlife Spot"
+    - "Landmarks and Outdoors > Beach"
+    - "Landmarks and Outdoors > Scenic Lookout"
+    - "Landmarks and Outdoors > Boardwalk"
+    - "Landmarks and Outdoors > Botanical Garden"
+    - "Landmarks and Outdoors > Harbor or Marina"
+    - "Landmarks and Outdoors > Hiking Trail"
+    - "Travel and Transportation > Pier"
+
+  # Templates: bakery_market_meander, brunch_and_bookstore,
+  # farmers_market_cook_at_home, rooftop_then_dinner, drinks_dinner_dessert,
+  # dinner_and_dessert_walk, wine_bar_and_shared_plates, night_market_and_bar,
+  # beach_day_into_seafood, dessert_crawl, fish_market_and_waterfront_walk.
+  foodie:
+    - "Dining and Drinking > Restaurant"
+    - "Dining and Drinking > Bakery"
+    - "Dining and Drinking > Dessert Shop"
+    - "Dining and Drinking > Bar"
     - "Dining and Drinking > Night Market"
+    - "Retail > Bookstore"
     - "Retail > Food and Beverage Retail > Farmers Market"
     - "Retail > Food and Beverage Retail > Fish Market"
 
+  # Templates: rooftop_then_dinner, comedy_night, live_music_and_late_drinks,
+  # cocktail_crawl, pub_crawl, dinner_and_dancing, night_market_and_bar,
+  # mini_golf_food_bar, bowling_burgers_beers, amusement_park_evening.
   nightlife:
-    - "Nightlife Spot"
+    - "Dining and Drinking > Restaurant"
     - "Dining and Drinking > Bar"
     - "Dining and Drinking > Brewery"
-    - "Dining and Drinking > Distillery"
+    - "Dining and Drinking > Night Market"
+    - "Dining and Drinking > Snack Place"
+    - "Dining and Drinking > Food Truck"
     - "Arts and Entertainment > Comedy Club"
     - "Arts and Entertainment > Dance Hall"
-    - "Arts and Entertainment > Country Dance Club"
-    - "Arts and Entertainment > Casino"
-    - "Arts and Entertainment > Performing Arts Venue"
-    - "Arts and Entertainment > Movie Theater"
-    - "Arts and Entertainment > Pool Hall"
+    - "Arts and Entertainment > Mini Golf Course"
+    - "Arts and Entertainment > Bowling Alley"
+    - "Arts and Entertainment > Amusement Park"
+    - "Nightlife Spot"
 
+  # Templates: brunch_and_bookstore, gallery_and_wine_bar, museum_coffee_bookstore,
+  # aquarium_and_harbour, pre_theatre_dinner_and_show, arcade_date,
+  # escape_room_and_dinner, rainy_day_indoors, zoo_and_nearby_lunch.
   nerdy:
-    - "Arts and Entertainment > Museum"
+    - "Dining and Drinking > Restaurant"
+    - "Dining and Drinking > Cafe, Coffee, and Tea House"
+    - "Dining and Drinking > Dessert Shop"
+    - "Dining and Drinking > Bar"
+    - "Retail > Bookstore"
     - "Arts and Entertainment > Art Gallery"
-    - "Arts and Entertainment > Planetarium"
+    - "Arts and Entertainment > Museum"
     - "Arts and Entertainment > Aquarium"
     - "Arts and Entertainment > Zoo"
-    - "Arts and Entertainment > Exhibit"
-    - "Arts and Entertainment > Public Art"
-    - "Arts and Entertainment > Gaming Cafe"
-    - "Arts and Entertainment > VR Cafe"
+    - "Arts and Entertainment > Performing Arts Venue"
     - "Arts and Entertainment > Arcade"
     - "Arts and Entertainment > Escape Room"
-    - "Retail > Bookstore"
-    - "Retail > Comic Book Store"
-    - "Community and Government > Library"
-    - "Landmarks and Outdoors > Historic and Protected Site"
-    - "Landmarks and Outdoors > Archaeological Site"
+    - "Landmarks and Outdoors > Harbor or Marina"
+    - "Travel and Transportation > Pier"
 
+  # Templates: morning_swim_and_breakfast, coastal_walk_and_lunch,
+  # botanical_picnic, sunset_lookout_and_dinner, sunset_picnic, hike_and_picnic,
+  # bike_trail_and_brewery, beach_day_into_seafood, ferry_day_out,
+  # zoo_and_nearby_lunch.
   outdoorsy:
-    - "Landmarks and Outdoors > Park"
+    - "Dining and Drinking > Restaurant"
+    - "Dining and Drinking > Cafe, Coffee, and Tea House"
+    - "Dining and Drinking > Bakery"
+    - "Dining and Drinking > Dessert Shop"
+    - "Dining and Drinking > Brewery"
+    - "Retail > Food and Beverage Retail > Farmers Market"
+    - "Arts and Entertainment > Zoo"
     - "Landmarks and Outdoors > Beach"
     - "Landmarks and Outdoors > Scenic Lookout"
     - "Landmarks and Outdoors > Boardwalk"
     - "Landmarks and Outdoors > Botanical Garden"
-    - "Landmarks and Outdoors > Sculpture Garden"
-    - "Landmarks and Outdoors > Nature Preserve"
-    - "Landmarks and Outdoors > Nature Trail"
     - "Landmarks and Outdoors > Hiking Trail"
     - "Landmarks and Outdoors > Bike Trail"
-    - "Landmarks and Outdoors > Waterfall"
-    - "Landmarks and Outdoors > Harbor or Marina"
-    - "Landmarks and Outdoors > Lighthouse"
-    - "Landmarks and Outdoors > Cave"
-    - "Landmarks and Outdoors > Hot Spring"
-    - "Landmarks and Outdoors > Island"
-    - "Landmarks and Outdoors > Bay"
-    - "Landmarks and Outdoors > Historic and Protected Site"
-    - "Landmarks and Outdoors > Plaza"
-    - "Travel and Transportation > Pier"
-    - "Sports and Recreation > Fishing Area"
 
+  # Templates: mini_golf_food_bar, bowling_burgers_beers, arcade_date,
+  # escape_room_and_dinner, hike_and_picnic, bike_trail_and_brewery,
+  # amusement_park_evening.
   active:
-    - "Arts and Entertainment > Bowling Alley"
+    - "Dining and Drinking > Restaurant"
+    - "Dining and Drinking > Bakery"
+    - "Dining and Drinking > Dessert Shop"
+    - "Dining and Drinking > Bar"
+    - "Dining and Drinking > Brewery"
     - "Arts and Entertainment > Mini Golf Course"
-    - "Arts and Entertainment > Laser Tag Center"
+    - "Arts and Entertainment > Bowling Alley"
+    - "Arts and Entertainment > Arcade"
     - "Arts and Entertainment > Escape Room"
-    - "Arts and Entertainment > Go Kart Track"
-    - "Arts and Entertainment > Roller Rink"
-    - "Arts and Entertainment > Pool Hall"
-    - "Arts and Entertainment > Disc Golf Course"
     - "Arts and Entertainment > Amusement Park"
-    - "Arts and Entertainment > Water Park"
-    - "Sports and Recreation > Skating"
-    - "Sports and Recreation > Water Sports"
-    - "Sports and Recreation > Snow Sports"
-    - "Sports and Recreation > Indoor Play Area"
     - "Landmarks and Outdoors > Hiking Trail"
     - "Landmarks and Outdoors > Bike Trail"
 
+  # Templates: coffee_and_stroll, bakery_market_meander, morning_swim_and_breakfast,
+  # brunch_and_bookstore, coastal_walk_and_lunch, museum_coffee_bookstore,
+  # aquarium_and_harbour, cafe_bookstore_dessert, farmers_market_cook_at_home,
+  # dinner_and_dessert_walk, dinner_and_a_movie, comedy_night, pub_crawl,
+  # night_market_and_bar, mini_golf_food_bar, bowling_burgers_beers, arcade_date,
+  # escape_room_and_dinner, bike_trail_and_brewery, ferry_day_out,
+  # rainy_day_indoors, dessert_crawl, zoo_and_nearby_lunch,
+  # amusement_park_evening, fish_market_and_waterfront_walk.
   casual:
+    - "Dining and Drinking > Restaurant"
     - "Dining and Drinking > Cafe, Coffee, and Tea House"
     - "Dining and Drinking > Bakery"
     - "Dining and Drinking > Dessert Shop"
-    - "Dining and Drinking > Food Truck"
+    - "Dining and Drinking > Bar"
+    - "Dining and Drinking > Brewery"
+    - "Dining and Drinking > Night Market"
     - "Dining and Drinking > Snack Place"
-    - "Dining and Drinking > Restaurant"
+    - "Dining and Drinking > Food Truck"
     - "Retail > Bookstore"
-    - "Retail > Flea Market"
-    - "Retail > Market"
     - "Retail > Food and Beverage Retail > Farmers Market"
+    - "Retail > Food and Beverage Retail > Fish Market"
+    - "Arts and Entertainment > Museum"
+    - "Arts and Entertainment > Aquarium"
+    - "Arts and Entertainment > Zoo"
+    - "Arts and Entertainment > Amusement Park"
     - "Arts and Entertainment > Movie Theater"
+    - "Arts and Entertainment > Comedy Club"
     - "Arts and Entertainment > Arcade"
+    - "Arts and Entertainment > Escape Room"
     - "Arts and Entertainment > Bowling Alley"
-    - "Landmarks and Outdoors > Park"
+    - "Arts and Entertainment > Mini Golf Course"
     - "Landmarks and Outdoors > Beach"
+    - "Landmarks and Outdoors > Scenic Lookout"
     - "Landmarks and Outdoors > Boardwalk"
+    - "Landmarks and Outdoors > Harbor or Marina"
+    - "Landmarks and Outdoors > Bike Trail"
+    - "Travel and Transportation > Pier"
