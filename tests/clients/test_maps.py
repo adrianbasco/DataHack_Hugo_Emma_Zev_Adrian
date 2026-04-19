@@ -3,18 +3,31 @@ from __future__ import annotations
 import json
 import os
 import unittest
+import dataclasses
 from datetime import datetime, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import httpx
 
+from back_end.clients.api_trace import ApiTraceLogger
 from back_end.clients.maps import (
     AmbiguousPlaceMatchError,
     GoogleMapsClient,
+    MapsClientError,
     MapsResponseSchemaError,
     MapsUpstreamError,
+    NoPlacePhotoError,
     NoPlaceMatchError,
 )
-from back_end.domain.models import CandidatePlace, LatLng, RouteRequest, TravelMode
+from back_end.domain.models import (
+    CandidatePlace,
+    LatLng,
+    MapsPlace,
+    PhotoAsset,
+    RouteRequest,
+    TravelMode,
+)
 from back_end.clients.settings import MapsConfigurationError, MapsSettings
 
 
@@ -57,6 +70,7 @@ class GoogleMapsClientTests(unittest.IsolatedAsyncioTestCase):
             name="Cute Cafe",
             latitude=-37.8136,
             longitude=144.9631,
+            address="1 Swanston St",
             locality="Melbourne",
             region="VIC",
             postcode="3000",
@@ -109,7 +123,65 @@ class GoogleMapsClientTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual("test-key", captured["api_key"])
         self.assertIn("places.displayName", str(captured["field_mask"]))
-        self.assertEqual("Cute Cafe, Melbourne, VIC, 3000", captured["body"]["textQuery"])
+        self.assertEqual(
+            "Cute Cafe, 1 Swanston St, Melbourne, VIC, 3000",
+            captured["body"]["textQuery"],
+        )
+
+    async def test_search_text_places_writes_api_trace_file(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            trace_path = Path(temp_dir) / "api_trace.jsonl"
+
+            def handler(request: httpx.Request) -> httpx.Response:
+                return _make_response(
+                    request,
+                    200,
+                    {
+                        "places": [
+                            {
+                                "id": "g-1",
+                                "name": "places/g-1",
+                                "displayName": {"text": "Cute Cafe"},
+                                "location": {
+                                    "latitude": -37.81361,
+                                    "longitude": 144.96311,
+                                },
+                                "postalAddress": {
+                                    "locality": "Melbourne",
+                                    "administrativeArea": "VIC",
+                                    "postalCode": "3000",
+                                },
+                            }
+                        ]
+                    },
+                )
+
+            client = GoogleMapsClient(
+                self.settings,
+                http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+                trace_logger=ApiTraceLogger(trace_path),
+            )
+            self.addAsyncCleanup(client.aclose)
+
+            await client.search_text_places(self.candidate)
+
+            entries = [
+                json.loads(line)
+                for line in trace_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(1, len(entries))
+            entry = entries[0]
+            self.assertEqual("google_maps", entry["service"])
+            self.assertEqual(
+                "__REDACTED__",
+                entry["request"]["headers"]["X-Goog-Api-Key"],
+            )
+            self.assertEqual(
+                "Cute Cafe, 1 Swanston St, Melbourne, VIC, 3000",
+                entry["request"]["body"]["textQuery"],
+            )
+            self.assertEqual("g-1", entry["response"]["body"]["places"][0]["id"])
 
     async def test_resolve_place_match_returns_best_exact_match(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
@@ -297,6 +369,254 @@ class GoogleMapsClientTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(NoPlaceMatchError):
             await client.resolve_place_match(self.candidate)
 
+    async def test_resolve_place_match_accepts_branch_name_noise_when_address_matches(self) -> None:
+        candidate = CandidatePlace(
+            fsq_place_id="messina",
+            name="Gelato Messina",
+            latitude=-33.87869,
+            longitude=151.20236,
+            address="3 Little Hay St",
+            locality="Haymarket",
+            region="NSW",
+            postcode="2000",
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _make_response(
+                request,
+                200,
+                {
+                    "places": [
+                        {
+                            "id": "messina-darling-square",
+                            "name": "places/messina-darling-square",
+                            "displayName": {"text": "Gelato Messina Darling Square"},
+                            "formattedAddress": "Shop 02/3 Little Hay St, Haymarket NSW 2000",
+                            "location": {
+                                "latitude": -33.8786079,
+                                "longitude": 151.2024991,
+                            },
+                            "postalAddress": {
+                                "locality": "Haymarket",
+                                "administrativeArea": "NSW",
+                                "postalCode": "2000",
+                            },
+                        }
+                    ]
+                },
+            )
+
+        client = GoogleMapsClient(
+            dataclasses.replace(self.settings, min_name_similarity=0.72),
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        self.addAsyncCleanup(client.aclose)
+
+        match = await client.resolve_place_match(candidate)
+
+        self.assertEqual("messina-darling-square", match.google_place.place_id)
+        self.assertEqual("address_match", match.match_kind)
+
+    async def test_resolve_place_match_accepts_max_brenner_world_square_address(self) -> None:
+        candidate = CandidatePlace(
+            fsq_place_id="max-world-square",
+            name="Max Brenner Chocolate Bar",
+            latitude=-33.877411,
+            longitude=151.206912,
+            address="644 George St",
+            locality="Sydney",
+            region="NSW",
+            postcode="2000",
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _make_response(
+                request,
+                200,
+                {
+                    "places": [
+                        {
+                            "id": "max-brenner-world-square",
+                            "name": "places/max-brenner-world-square",
+                            "displayName": {"text": "Max Brenner - World Square"},
+                            "formattedAddress": (
+                                "World Square Shopping Centre, Shop 1052 B/644 "
+                                "George St, Sydney NSW 2000"
+                            ),
+                            "location": {
+                                "latitude": -33.877437,
+                                "longitude": 151.2068032,
+                            },
+                            "postalAddress": {
+                                "locality": "Sydney",
+                                "administrativeArea": "NSW",
+                                "postalCode": "2000",
+                            },
+                        }
+                    ]
+                },
+            )
+
+        client = GoogleMapsClient(
+            dataclasses.replace(self.settings, min_name_similarity=0.72),
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        self.addAsyncCleanup(client.aclose)
+
+        match = await client.resolve_place_match(candidate)
+
+        self.assertEqual("max-brenner-world-square", match.google_place.place_id)
+        self.assertEqual("address_match", match.match_kind)
+
+    async def test_resolve_place_match_rejects_stale_street_address(self) -> None:
+        candidate = CandidatePlace(
+            fsq_place_id="max-stale",
+            name="Max Brenner Chocolate Bar",
+            latitude=-33.865158,
+            longitude=151.206886,
+            address="60 Margaret St",
+            locality="Sydney",
+            region="NSW",
+            postcode="2000",
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _make_response(
+                request,
+                200,
+                {
+                    "places": [
+                        {
+                            "id": "max-brenner-world-square",
+                            "name": "places/max-brenner-world-square",
+                            "displayName": {"text": "Max Brenner - World Square"},
+                            "formattedAddress": (
+                                "World Square Shopping Centre, Shop 1052 B/644 "
+                                "George St, Sydney NSW 2000"
+                            ),
+                            "location": {
+                                "latitude": -33.877437,
+                                "longitude": 151.2068032,
+                            },
+                            "postalAddress": {
+                                "locality": "Sydney",
+                                "administrativeArea": "NSW",
+                                "postalCode": "2000",
+                            },
+                        }
+                    ]
+                },
+            )
+
+        client = GoogleMapsClient(
+            dataclasses.replace(
+                self.settings,
+                min_name_similarity=0.72,
+                max_match_distance_meters=350.0,
+            ),
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        self.addAsyncCleanup(client.aclose)
+
+        with self.assertRaises(NoPlaceMatchError):
+            await client.resolve_place_match(candidate)
+
+    async def test_resolve_place_match_accepts_locality_drift_when_address_matches(self) -> None:
+        candidate = CandidatePlace(
+            fsq_place_id="belgian-cafe",
+            name="Belgian Chocolate Café",
+            latitude=-33.8591,
+            longitude=151.2081,
+            address="91 George St",
+            locality="Sydney",
+            region="NSW",
+            postcode="2000",
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _make_response(
+                request,
+                200,
+                {
+                    "places": [
+                        {
+                            "id": "belgian-cafe-google",
+                            "name": "places/belgian-cafe-google",
+                            "displayName": {"text": "Belgian Café"},
+                            "formattedAddress": "91 George St, The Rocks NSW 2000",
+                            "location": {
+                                "latitude": -33.8591,
+                                "longitude": 151.2081,
+                            },
+                            "postalAddress": {
+                                "locality": "The Rocks",
+                                "administrativeArea": "NSW",
+                                "postalCode": "2000",
+                            },
+                        }
+                    ]
+                },
+            )
+
+        client = GoogleMapsClient(
+            dataclasses.replace(self.settings, min_name_similarity=0.72),
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        self.addAsyncCleanup(client.aclose)
+
+        match = await client.resolve_place_match(candidate)
+
+        self.assertEqual("belgian-cafe-google", match.google_place.place_id)
+        self.assertEqual("address_match", match.match_kind)
+
+    async def test_resolve_place_match_can_fallback_when_street_differs_but_name_and_coords_match(self) -> None:
+        candidate = CandidatePlace(
+            fsq_place_id="rivareno",
+            name="Rivareno Gelato Barangaroo",
+            latitude=-33.86534,
+            longitude=151.20157,
+            address="33/4 Barangaroo Ave",
+            locality="Barangaroo",
+            region="NSW",
+            postcode="2000",
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _make_response(
+                request,
+                200,
+                {
+                    "places": [
+                        {
+                            "id": "rivareno-google",
+                            "name": "places/rivareno-google",
+                            "displayName": {"text": "Rivareno Gelato Barangaroo"},
+                            "formattedAddress": "Shop 2/4 Watermans Quay, Barangaroo NSW 2000",
+                            "location": {
+                                "latitude": -33.86536,
+                                "longitude": 151.20158,
+                            },
+                            "postalAddress": {
+                                "locality": "Barangaroo",
+                                "administrativeArea": "NSW",
+                                "postalCode": "2000",
+                            },
+                        }
+                    ]
+                },
+            )
+
+        client = GoogleMapsClient(
+            dataclasses.replace(self.settings, min_name_similarity=0.72),
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        self.addAsyncCleanup(client.aclose)
+
+        match = await client.resolve_place_match(candidate)
+
+        self.assertEqual("rivareno-google", match.google_place.place_id)
+        self.assertEqual("coord_name_address_disagrees", match.match_kind)
+
     async def test_get_place_details_raises_on_malformed_payload(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return _make_response(
@@ -346,6 +666,206 @@ class GoogleMapsClientTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual("true", captured_query["skipHttpRedirect"])
         self.assertEqual("test-key", captured_query["key"])
+
+    async def test_get_photo_media_rejects_malformed_photo_name(self) -> None:
+        client = GoogleMapsClient(
+            self.settings,
+            http_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(
+                    lambda request: self.fail("unexpected HTTP request")
+                )
+            ),
+        )
+        self.addAsyncCleanup(client.aclose)
+
+        with self.assertRaises(MapsClientError):
+            await client.get_photo_media("https://example.com/not-a-photo")
+
+    async def test_get_photo_media_rejects_zero_dimensions_without_defaulting(self) -> None:
+        client = GoogleMapsClient(
+            self.settings,
+            http_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(
+                    lambda request: self.fail("unexpected HTTP request")
+                )
+            ),
+        )
+        self.addAsyncCleanup(client.aclose)
+
+        with self.assertRaises(MapsClientError):
+            await client.get_photo_media(
+                "places/g-1/photos/photo-1",
+                max_width_px=0,
+            )
+
+    async def test_get_primary_photo_media_uses_first_place_photo(self) -> None:
+        captured: dict[str, object] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["url"] = str(request.url)
+            return _make_response(
+                request,
+                200,
+                {
+                    "name": "places/g-1/photos/primary/media",
+                    "photoUri": "https://lh3.googleusercontent.com/primary",
+                },
+            )
+
+        client = GoogleMapsClient(
+            self.settings,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        self.addAsyncCleanup(client.aclose)
+        place = MapsPlace(
+            place_id="g-1",
+            resource_name="places/g-1",
+            display_name="Cute Cafe",
+            location=LatLng(latitude=-37.8136, longitude=144.9631),
+            photos=(
+                PhotoAsset(
+                    name="places/g-1/photos/primary",
+                    width_px=1200,
+                    height_px=800,
+                ),
+                PhotoAsset(
+                    name="places/g-1/photos/secondary",
+                    width_px=1200,
+                    height_px=800,
+                ),
+            ),
+        )
+
+        media = await client.get_primary_photo_media(
+            place,
+            max_width_px=640,
+            max_height_px=480,
+        )
+
+        self.assertEqual("https://lh3.googleusercontent.com/primary", media.photo_uri)
+        self.assertEqual(
+            "https://places.googleapis.com/v1/places/g-1/photos/primary/media"
+            "?maxWidthPx=640&maxHeightPx=480&skipHttpRedirect=true&key=test-key",
+            captured["url"],
+        )
+
+    async def test_get_place_primary_photo_media_fetches_details_then_media(self) -> None:
+        captured_paths: list[str] = []
+        captured_detail_field_mask: list[str | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured_paths.append(request.url.path)
+            if request.url.path == "/v1/places/g-1":
+                captured_detail_field_mask.append(
+                    request.headers.get("X-Goog-FieldMask")
+                )
+                return _make_response(
+                    request,
+                    200,
+                    {
+                        "id": "g-1",
+                        "name": "places/g-1",
+                        "displayName": {"text": "Cute Cafe"},
+                        "location": {
+                            "latitude": -37.8136,
+                            "longitude": 144.9631,
+                        },
+                        "photos": [
+                            {
+                                "name": "places/g-1/photos/photo-1",
+                                "widthPx": 1200,
+                                "heightPx": 800,
+                                "authorAttributions": [],
+                            }
+                        ],
+                    },
+                )
+            if request.url.path == "/v1/places/g-1/photos/photo-1/media":
+                return _make_response(
+                    request,
+                    200,
+                    {
+                        "name": "places/g-1/photos/photo-1/media",
+                        "photoUri": "https://lh3.googleusercontent.com/photo-1",
+                    },
+                )
+            self.fail(f"unexpected URL {request.url}")
+
+        client = GoogleMapsClient(
+            self.settings,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        self.addAsyncCleanup(client.aclose)
+
+        media = await client.get_place_primary_photo_media("g-1")
+
+        self.assertEqual("https://lh3.googleusercontent.com/photo-1", media.photo_uri)
+        self.assertEqual(
+            [
+                "/v1/places/g-1",
+                "/v1/places/g-1/photos/photo-1/media",
+            ],
+            captured_paths,
+        )
+        self.assertIn("photos", captured_detail_field_mask[0])
+
+    async def test_get_primary_photo_media_raises_when_place_has_no_photos(self) -> None:
+        client = GoogleMapsClient(
+            self.settings,
+            http_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(
+                    lambda request: self.fail("unexpected HTTP request")
+                )
+            ),
+        )
+        self.addAsyncCleanup(client.aclose)
+        place = MapsPlace(
+            place_id="g-1",
+            resource_name="places/g-1",
+            display_name="No Photo Cafe",
+            location=LatLng(latitude=-37.8136, longitude=144.9631),
+        )
+
+        with self.assertLogs("back_end.clients.maps", level="ERROR") as logs:
+            with self.assertRaises(NoPlacePhotoError):
+                await client.get_primary_photo_media(place)
+
+        self.assertIn("has no photos", "\n".join(logs.output))
+
+    async def test_photo_author_attributions_must_be_objects(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _make_response(
+                request,
+                200,
+                {
+                    "places": [
+                        {
+                            "id": "g-1",
+                            "name": "places/g-1",
+                            "displayName": {"text": "Cute Cafe"},
+                            "location": {
+                                "latitude": -37.81361,
+                                "longitude": 144.96311,
+                            },
+                            "photos": [
+                                {
+                                    "name": "places/g-1/photos/photo-1",
+                                    "authorAttributions": ["not-an-object"],
+                                }
+                            ],
+                        }
+                    ]
+                },
+            )
+
+        client = GoogleMapsClient(
+            self.settings,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        self.addAsyncCleanup(client.aclose)
+
+        with self.assertRaises(MapsResponseSchemaError):
+            await client.search_text_places(self.candidate)
 
     async def test_compute_route_parses_legs_and_transit_steps(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:

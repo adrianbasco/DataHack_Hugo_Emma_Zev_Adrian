@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from back_end.clients.maps_hours import is_open_at_plan_time
 from back_end.clients.openrouter import OpenRouterClient
 from back_end.llm.models import (
     AgentTool,
@@ -192,6 +194,10 @@ class RagPlaceSearchTool:
         max_top_k: int = 15,
         candidate_place_ids: tuple[str, ...] | None = None,
         scope_label: str | None = None,
+        include_place_profile_tool: bool = True,
+        validated_only: bool = False,
+        place_resolver: Any | None = None,
+        plan_time_iso: str | None = None,
     ) -> None:
         if default_top_k <= 0:
             raise ValueError("default_top_k must be positive.")
@@ -218,6 +224,12 @@ class RagPlaceSearchTool:
         if self._candidate_place_ids is not None and not self._candidate_place_ids:
             raise ValueError("candidate_place_ids must not be empty when supplied.")
         self._scope_label = scope_label
+        self._include_place_profile_tool = include_place_profile_tool
+        self._validated_only = validated_only
+        self._place_resolver = place_resolver
+        self._plan_time_iso = plan_time_iso
+        if self._validated_only and self._place_resolver is None:
+            raise ValueError("place_resolver is required when validated_only=True.")
 
     def as_agent_tool(self) -> AgentTool:
         """Return this searcher as an OpenRouter function tool."""
@@ -269,12 +281,14 @@ class RagPlaceSearchTool:
     def as_agent_tools(self) -> tuple[AgentTool, ...]:
         """Return the full RAG toolset exposed to the planning agent."""
 
-        return (
+        tools = [
             self.as_agent_tool(),
             self._near_anchor_agent_tool(),
             self._near_latlng_agent_tool(),
-            self._place_profile_agent_tool(),
-        )
+        ]
+        if self._include_place_profile_tool:
+            tools.append(self._place_profile_agent_tool())
+        return tuple(tools)
 
     def _near_anchor_agent_tool(self) -> AgentTool:
         return AgentTool(
@@ -385,10 +399,19 @@ class RagPlaceSearchTool:
         hits, empty_reason = await self._search_hits(
             query_text=query_text,
             stop_type=stop_type,
-            top_k=top_k,
+            top_k=self._search_fetch_limit(top_k),
             exclude_place_ids=exclude_place_ids,
             candidate_place_ids=None,
         )
+        results = await self._tool_payloads(
+            hits=hits,
+            top_k=top_k,
+            stop_type=stop_type,
+            distances_by_id=None,
+            distance_key=None,
+        )
+        if self._validated_only and not results and empty_reason is None:
+            empty_reason = "No Maps-validated candidate places survived filtering."
 
         if empty_reason is not None:
             logger.warning(
@@ -408,7 +431,7 @@ class RagPlaceSearchTool:
                 else None
             ),
             "empty_reason": empty_reason,
-            "results": [_hit_to_tool_payload(hit) for hit in hits],
+            "results": results,
         }
 
     async def search_near_anchor(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -442,10 +465,19 @@ class RagPlaceSearchTool:
         hits, empty_reason = await self._search_hits(
             query_text=query_text,
             stop_type=stop_type,
-            top_k=top_k,
+            top_k=self._search_fetch_limit(top_k),
             exclude_place_ids=exclude_place_ids | {anchor_id},
             candidate_place_ids=set(distances_by_id),
         )
+        results = await self._tool_payloads(
+            hits=hits,
+            top_k=top_k,
+            stop_type=stop_type,
+            distances_by_id=distances_by_id,
+            distance_key="distance_km",
+        )
+        if self._validated_only and not results and empty_reason is None:
+            empty_reason = "No Maps-validated candidate places survived filtering."
         return {
             "query_text": query_text,
             "stop_type": stop_type,
@@ -456,13 +488,7 @@ class RagPlaceSearchTool:
                 else None
             ),
             "empty_reason": empty_reason,
-            "results": [
-                {
-                    **_hit_to_tool_payload(hit),
-                    "distance_km": round(distances_by_id[hit.fsq_place_id], 3),
-                }
-                for hit in hits
-            ],
+            "results": results,
             "anchor_fsq_place_id": anchor_id,
             "max_km": max_km,
         }
@@ -494,10 +520,19 @@ class RagPlaceSearchTool:
         hits, empty_reason = await self._search_hits(
             query_text=query_text,
             stop_type=stop_type,
-            top_k=top_k,
+            top_k=self._search_fetch_limit(top_k),
             exclude_place_ids=exclude_place_ids,
             candidate_place_ids=set(distances_by_id),
         )
+        results = await self._tool_payloads(
+            hits=hits,
+            top_k=top_k,
+            stop_type=stop_type,
+            distances_by_id=distances_by_id,
+            distance_key="distance_from_seed_km",
+        )
+        if self._validated_only and not results and empty_reason is None:
+            empty_reason = "No Maps-validated candidate places survived filtering."
         return {
             "query_text": query_text,
             "stop_type": stop_type,
@@ -506,13 +541,7 @@ class RagPlaceSearchTool:
             "max_km": max_km,
             "scope_label": self._scope_label,
             "empty_reason": empty_reason,
-            "results": [
-                {
-                    **_hit_to_tool_payload(hit),
-                    "distance_from_seed_km": round(distances_by_id[hit.fsq_place_id], 3),
-                }
-                for hit in hits
-            ],
+            "results": results,
         }
 
     def get_place_profile(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -558,6 +587,79 @@ class RagPlaceSearchTool:
             candidate_place_ids=allowed_ids,
         )
         return hits, "Vector search returned no hits." if not hits else None
+
+    def _search_fetch_limit(self, requested_top_k: int) -> int:
+        if not self._validated_only:
+            return requested_top_k
+        return min(self._max_top_k, max(requested_top_k, requested_top_k * 3))
+
+    async def _tool_payloads(
+        self,
+        *,
+        hits: tuple[RagSearchHit, ...],
+        top_k: int,
+        stop_type: str | None,
+        distances_by_id: dict[str, float] | None,
+        distance_key: str | None,
+    ) -> list[dict[str, Any]]:
+        if not self._validated_only:
+            return [
+                _hit_to_tool_payload_with_distance(
+                    hit,
+                    distances_by_id=distances_by_id,
+                    distance_key=distance_key,
+                )
+                for hit in hits[:top_k]
+            ]
+
+        assert self._place_resolver is not None
+        results: list[dict[str, Any]] = []
+        for hit in hits:
+            resolved = await self._place_resolver.resolve_place_match(hit.fsq_place_id)
+            if not hasattr(resolved, "google_place"):
+                logger.warning(
+                    "Dropping fsq_place_id=%s from validated RAG results: %s",
+                    hit.fsq_place_id,
+                    getattr(resolved, "reason", "Maps resolution failed."),
+                )
+                continue
+
+            place = resolved.google_place
+            if place.business_status not in {None, "OPERATIONAL"}:
+                logger.warning(
+                    "Dropping fsq_place_id=%s from validated RAG results: "
+                    "business_status=%s.",
+                    hit.fsq_place_id,
+                    place.business_status,
+                )
+                continue
+
+            if self._plan_time_iso is not None and place.regular_opening_hours is not None:
+                open_at_plan_time = is_open_at_plan_time(
+                    place.regular_opening_hours,
+                    self._plan_time_iso,
+                )
+                if open_at_plan_time is False:
+                    logger.warning(
+                        "Dropping fsq_place_id=%s from validated RAG results: "
+                        "closed at plan_time_iso=%s.",
+                        hit.fsq_place_id,
+                        self._plan_time_iso,
+                    )
+                    continue
+
+            results.append(
+                _validated_hit_to_tool_payload(
+                    hit,
+                    resolved=resolved,
+                    stop_type=stop_type,
+                    distances_by_id=distances_by_id,
+                    distance_key=distance_key,
+                )
+            )
+            if len(results) >= top_k:
+                break
+        return results
 
     def _metadata_for_place_id(
         self,
@@ -641,11 +743,14 @@ class DateIdeaAgent:
         max_tokens: int = 3000,
         max_tool_round_trips: int = 8,
         template_context: str | None = None,
+        system_prompt_override: str | None = None,
     ) -> None:
         if max_tokens <= 0:
             raise ValueError("max_tokens must be positive.")
         if max_tool_round_trips <= 0:
             raise ValueError("max_tool_round_trips must be positive.")
+        if system_prompt_override is not None and not system_prompt_override.strip():
+            raise ValueError("system_prompt_override must be a non-empty string.")
         self._llm_client = llm_client
         self._rag_search_tool = rag_search_tool
         self._extra_tools = tuple(extra_tools)
@@ -663,9 +768,23 @@ class DateIdeaAgent:
         self._max_tokens = max_tokens
         self._max_tool_round_trips = max_tool_round_trips
         self._template_context = template_context or _default_template_context()
+        self._system_prompt_override = (
+            system_prompt_override.strip() if system_prompt_override is not None else None
+        )
 
-    async def generate(self, request: DateIdeaRequest) -> DateIdeaAgentResult:
-        """Generate grounded date ideas for a user request."""
+    async def generate(
+        self,
+        request: DateIdeaRequest,
+        *,
+        template: Mapping[str, Any] | None = None,
+    ) -> DateIdeaAgentResult:
+        """Generate grounded date ideas for a user request.
+
+        When ``template`` is supplied, the returned ideas are additionally
+        required to match that template's stop shape (count, kinds, and
+        stop_types). This is what the pre-cache pipeline uses to force the
+        agent to obey an exact template.
+        """
 
         if not request.prompt.strip():
             raise ValueError("DateIdeaRequest.prompt must not be empty.")
@@ -700,6 +819,7 @@ class DateIdeaAgent:
             ideas = _parse_and_validate_ideas(
                 raw_output,
                 retrieved_places=retrieved_places,
+                template=template,
             )
         except DateIdeaAgentOutputError as exc:
             logger.warning(
@@ -715,6 +835,7 @@ class DateIdeaAgent:
             ideas = _parse_and_validate_ideas(
                 raw_output,
                 retrieved_places=retrieved_places,
+                template=template,
             )
         if not ideas:
             logger.warning(
@@ -729,6 +850,8 @@ class DateIdeaAgent:
         )
 
     def _system_prompt(self) -> str:
+        if self._system_prompt_override is not None:
+            return self._system_prompt_override
         maps_rules: list[str] = []
         if self._has_maps_verify_tool:
             maps_rules.append(
@@ -765,13 +888,9 @@ class DateIdeaAgent:
                 "- Prefer two to four stops per idea. Keep ideas distinct from each other.",
                 "- If the RAG results are weak or empty, say so in rejected_ideas instead of fabricating.",
                 "- Your final answer must be only a JSON object. No markdown fences, no prose.",
-                "- Final JSON shape: "
-                '{"date_ideas":[{"title":"...","hook":"...",'
-                '"template_hint":"... or null","maps_verification_needed":true,'
-                '"constraints_considered":["..."],"stops":[{"kind":"venue",'
-                '"stop_type":"restaurant","fsq_place_id":"...","name":"...",'
-                '"description":"...","why_it_fits":"..."}]}],'
-                '"rejected_ideas":["..."]}',
+                "- Output schema is enforced separately. Include date_ideas and rejected_ideas only.",
+                "- Each idea must include title, hook, template_hint, maps_verification_needed, constraints_considered, and stops.",
+                "- Each stop must include kind, stop_type, fsq_place_id, name, description, and why_it_fits.",
                 "",
                 "Useful date-template shapes:",
                 self._template_context,
@@ -868,6 +987,7 @@ def _hit_to_tool_payload(hit: RagSearchHit) -> dict[str, Any]:
     return {
         "fsq_place_id": hit.fsq_place_id,
         "name": hit.name,
+        "address": _optional_metadata_str(metadata.get("address")),
         "semantic_score": round(hit.semantic_score, 6),
         "final_score": round(hit.final_score, 6),
         "score_breakdown": {
@@ -888,18 +1008,125 @@ def _hit_to_tool_payload(hit: RagSearchHit) -> dict[str, Any]:
     }
 
 
+def _hit_to_tool_payload_with_distance(
+    hit: RagSearchHit,
+    *,
+    distances_by_id: dict[str, float] | None,
+    distance_key: str | None,
+) -> dict[str, Any]:
+    payload = _hit_to_tool_payload(hit)
+    if distances_by_id is not None and distance_key is not None:
+        payload[distance_key] = round(distances_by_id[hit.fsq_place_id], 3)
+    return payload
+
+
+def _validated_hit_to_tool_payload(
+    hit: RagSearchHit,
+    *,
+    resolved: Any,
+    stop_type: str | None,
+    distances_by_id: dict[str, float] | None,
+    distance_key: str | None,
+) -> dict[str, Any]:
+    place = resolved.google_place
+    payload: dict[str, Any] = {
+        "fsq_place_id": hit.fsq_place_id,
+        "name": place.display_name or hit.name,
+        "address": place.formatted_address or _optional_metadata_str(hit.metadata.get("address")),
+        "stop_type": stop_type,
+        "match_kind": getattr(resolved, "match_kind", "validated"),
+        "reason": _validated_candidate_reason(stop_type=stop_type, hit=hit),
+    }
+    if distances_by_id is not None and distance_key is not None:
+        payload[distance_key] = round(distances_by_id[hit.fsq_place_id], 3)
+    return payload
+
+
+def _validated_candidate_reason(*, stop_type: str | None, hit: RagSearchHit) -> str:
+    label = stop_type.replace("_", " ") if stop_type else "venue"
+    tags = _string_list(hit.metadata.get("crawl4ai_ambience_tags"))
+    if tags:
+        return f"Validated {label}; tags: {', '.join(tags[:3])}."
+    return f"Validated {label} candidate."
+
+
 def _parse_final_json(text: str | None) -> dict[str, Any]:
     if text is None or text.strip() == "":
         raise DateIdeaAgentOutputError("Date-idea agent returned an empty final response.")
-    text = _strip_json_fence(text.strip())
+    cleaned = _strip_json_fence(text.strip())
     try:
-        parsed = json.loads(text)
-    except ValueError as exc:
-        logger.error("Date-idea agent returned non-JSON final output: %r", text[:1000])
-        raise DateIdeaAgentOutputError("Date-idea agent returned non-JSON final output.") from exc
+        parsed = json.loads(cleaned)
+    except ValueError:
+        extracted = _extract_first_json_object(cleaned)
+        if extracted is None:
+            logger.error(
+                "Date-idea agent returned non-JSON final output: %r",
+                cleaned[:1000],
+            )
+            raise DateIdeaAgentOutputError(
+                "Date-idea agent returned non-JSON final output."
+            ) from None
+        try:
+            parsed = json.loads(extracted)
+        except ValueError as exc:
+            logger.error(
+                "Date-idea agent returned non-JSON final output after JSON "
+                "object extraction: %r",
+                extracted[:1000],
+            )
+            raise DateIdeaAgentOutputError(
+                "Date-idea agent returned non-JSON final output."
+            ) from exc
+        logger.warning(
+            "Date-idea agent wrapped its JSON output in surrounding text; "
+            "extracted the first balanced JSON object and continuing."
+        )
     if not isinstance(parsed, dict):
         raise DateIdeaAgentOutputError("Date-idea agent final output must be a JSON object.")
     return parsed
+
+
+def _extract_first_json_object(text: str) -> str | None:
+    """Return the first balanced top-level JSON object in ``text``, if any.
+
+    The date-idea agent is sometimes a little chatty and emits text like
+    ``"Here is the plan:\\n\\n{...}\\n\\nHope it helps!"`` despite the
+    system-prompt instruction to emit only JSON. Rather than burn a
+    schema-repair round trip on that, this helper walks the string and
+    returns the substring spanning the first complete ``{...}`` object,
+    respecting string boundaries and escapes. Returns ``None`` if no such
+    object exists.
+    """
+
+    start_index = text.find("{")
+    if start_index == -1:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start_index, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char == "{":
+            depth += 1
+            continue
+        if char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start_index : index + 1]
+    return None
 
 
 def _strip_json_fence(text: str) -> str:
@@ -1032,7 +1259,11 @@ def _parse_and_validate_ideas(
     for idea_index, raw_idea in enumerate(raw_ideas):
         if not isinstance(raw_idea, dict):
             raise DateIdeaAgentOutputError(f"date_ideas[{idea_index}] must be an object.")
-        title = _required_output_string(raw_idea, "title")
+        title = _output_string_or_default(
+            raw_idea,
+            "title",
+            default=f"Date Night Plan {idea_index + 1}",
+        )
         normalized_title = title.casefold()
         if normalized_title in used_plan_titles:
             raise DateIdeaAgentOutputError(f"Duplicate date idea title {title!r}.")
@@ -1051,6 +1282,12 @@ def _parse_and_validate_ideas(
             for stop_index, raw_stop in enumerate(raw_stops)
         )
         if template_requirements is not None:
+            stops = _coerce_stops_to_template_shape(
+                idea_title=title,
+                stops=stops,
+                template=template or {},
+                requirements=template_requirements,
+            )
             _validate_idea_matches_template(
                 idea_title=title,
                 stops=stops,
@@ -1070,7 +1307,11 @@ def _parse_and_validate_ideas(
         ideas.append(
             DateIdea(
                 title=title,
-                hook=_required_output_string(raw_idea, "hook"),
+                hook=_output_string_or_default(
+                    raw_idea,
+                    "hook",
+                    default="A Maps-verified date night plan.",
+                ),
                 template_hint=_nullable_string(raw_idea.get("template_hint"), "template_hint"),
                 stops=stops,
                 maps_verification_needed=_required_bool(
@@ -1136,8 +1377,16 @@ def _parse_and_validate_stop(
         stop_type=_required_output_string(raw_stop, "stop_type"),
         fsq_place_id=fsq_place_id,
         name=_required_output_string(raw_stop, "name"),
-        description=_required_output_string(raw_stop, "description"),
-        why_it_fits=_required_output_string(raw_stop, "why_it_fits"),
+        description=_output_string_or_default(
+            raw_stop,
+            "description",
+            default=_required_output_string(raw_stop, "name"),
+        ),
+        why_it_fits=_output_string_or_default(
+            raw_stop,
+            "why_it_fits",
+            default="Matches the requested template stop and was returned by the validated search tools.",
+        ),
     )
 
 
@@ -1239,6 +1488,44 @@ def _validate_idea_matches_template(
             )
 
 
+def _coerce_stops_to_template_shape(
+    *,
+    idea_title: str,
+    stops: tuple[DateIdeaStop, ...],
+    template: dict[str, Any],
+    requirements: tuple[_TemplateStopRequirement, ...],
+) -> tuple[DateIdeaStop, ...]:
+    if len(stops) == len(requirements):
+        return stops
+
+    selected: list[DateIdeaStop] = []
+    cursor = 0
+    for requirement in requirements:
+        found: DateIdeaStop | None = None
+        while cursor < len(stops):
+            stop = stops[cursor]
+            cursor += 1
+            if stop.kind != requirement.kind:
+                continue
+            if _normalize_stop_type(stop.stop_type) not in requirement.accepted_stop_types:
+                continue
+            found = stop
+            break
+        if found is None:
+            return stops
+        selected.append(found)
+
+    logger.warning(
+        "Date-idea agent returned %d stops for template=%s; keeping the %d "
+        "stops that match the required template sequence for idea=%r.",
+        len(stops),
+        _template_id_for_error(template),
+        len(selected),
+        idea_title,
+    )
+    return tuple(selected)
+
+
 def _template_id_for_error(template: dict[str, Any]) -> str:
     template_id = template.get("id")
     if isinstance(template_id, str) and template_id.strip():
@@ -1278,6 +1565,22 @@ def _required_output_string(payload: dict[str, Any], field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise DateIdeaAgentOutputError(f"{field_name} must be a non-empty string.")
     return value.strip()
+
+
+def _output_string_or_default(
+    payload: dict[str, Any],
+    field_name: str,
+    *,
+    default: str,
+) -> str:
+    value = payload.get(field_name)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    logger.warning(
+        "Date-idea agent output field %s was missing or empty; using fallback text.",
+        field_name,
+    )
+    return default
 
 
 def _optional_non_empty_string(value: Any, field_name: str) -> str | None:

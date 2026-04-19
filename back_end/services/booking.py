@@ -23,6 +23,7 @@ BOOKING_DISPOSITIONS = (
     "failed",
 )
 E164_PHONE_RE = re.compile(r"^\+[1-9]\d{6,14}$")
+AUSTRALIAN_E164_PHONE_RE = re.compile(r"^\+61[23478]\d{8}$")
 
 
 class BookingValidationError(ValueError):
@@ -99,8 +100,8 @@ class BookingRequestBuilder:
         request_data = _booking_request_data(request)
         task = _booking_task(request, request_data)
         first_sentence = (
-            f"Hi, I am an AI booking assistant calling on behalf of "
-            f"{request.booking_name} to book a table at {request.restaurant_name}."
+            f"Heyyy, I am calling on behalf of {request.booking_name} to book "
+            f"a table at {request.restaurant_name}."
         )
         return BlandCallRequest(
             phone_number=request.restaurant_phone_number,
@@ -215,7 +216,10 @@ def _validate_booking_request(request: RestaurantBookingRequest) -> None:
         raise BookingValidationError("party_size must be positive.")
     if request.arrival_time.tzinfo is None or request.arrival_time.utcoffset() is None:
         raise BookingValidationError("arrival_time must be timezone-aware.")
-    _validate_e164(request.restaurant_phone_number, "restaurant_phone_number")
+    _validate_australian_phone_number(
+        request.restaurant_phone_number,
+        "restaurant_phone_number",
+    )
     if (
         request.acceptable_time_window_minutes is not None
         and request.acceptable_time_window_minutes < 0
@@ -224,7 +228,10 @@ def _validate_booking_request(request: RestaurantBookingRequest) -> None:
             "acceptable_time_window_minutes must be >= 0 when provided."
         )
     if request.customer_phone_number is not None:
-        _validate_e164(request.customer_phone_number, "customer_phone_number")
+        _validate_australian_phone_number(
+            request.customer_phone_number,
+            "customer_phone_number",
+        )
 
 
 def _booking_request_data(request: RestaurantBookingRequest) -> dict[str, Any]:
@@ -275,13 +282,12 @@ def _booking_task(
         )
 
     context_lines = [
-        "You are an AI booking assistant making a restaurant reservation.",
+        "You are making a restaurant reservation.",
         f"Restaurant: {request.restaurant_name.strip()}.",
         f"Book for: {request.party_size} people.",
         f"Requested time: {local_time}.",
         f"Booking name: {request.booking_name.strip()}.",
         fallback_instruction,
-        "State clearly that you are an AI assistant calling on behalf of the customer.",
         "Ask for a confirmation number or staff name if the booking is accepted.",
         "Repeat the final booking details before ending the call.",
         "Do not provide payment card details, passwords, or sensitive information.",
@@ -359,4 +365,13 @@ def _validate_e164(value: str, field_name: str) -> None:
     if not E164_PHONE_RE.fullmatch(value):
         raise BookingValidationError(
             f"{field_name} must be in E.164 format, got {value!r}."
+        )
+
+
+def _validate_australian_phone_number(value: str, field_name: str) -> None:
+    _validate_e164(value, field_name)
+    if not AUSTRALIAN_E164_PHONE_RE.fullmatch(value):
+        raise BookingValidationError(
+            f"{field_name} must be an Australian mobile or geographic number "
+            f"in E.164 format, got {value!r}."
         )

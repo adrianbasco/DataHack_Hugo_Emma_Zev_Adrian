@@ -1,4 +1,4 @@
-"""Parquet output storage for generated pre-cache date plans."""
+"""Parquet output storage for generated pre-cache date plans and failures."""
 
 from __future__ import annotations
 
@@ -10,13 +10,17 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
+
+if TYPE_CHECKING:
+    from back_end.agents.precache_planner import PrecachePlannerFailure
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_PRECACHE_OUTPUT_PATH = Path("data/precache/plans.parquet")
+DEFAULT_PRECACHE_FAILURE_OUTPUT_PATH = Path("data/precache/failures.parquet")
 
 OUTPUT_COLUMNS: tuple[str, ...] = (
     "plan_id",
@@ -43,6 +47,22 @@ OUTPUT_COLUMNS: tuple[str, ...] = (
     "generated_at_utc",
     "written_at_utc",
     "model",
+)
+
+FAILURE_OUTPUT_COLUMNS: tuple[str, ...] = (
+    "failure_id",
+    "bucket_id",
+    "template_id",
+    "plan_time_iso",
+    "attempt_index",
+    "reason",
+    "detail",
+    "rejected_ideas_json",
+    "signature",
+    "tool_executions_count",
+    "model",
+    "generated_at_utc",
+    "written_at_utc",
 )
 
 REQUIRED_BUCKET_METADATA: tuple[str, ...] = (
@@ -90,6 +110,35 @@ class PrecacheWriteResult:
     plan_ids: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class PrecacheFailureOutput:
+    """One planner failure enriched with the cell metadata needed for storage."""
+
+    bucket_id: str
+    template_id: str
+    plan_time_iso: str
+    attempt_index: int
+    reason: str
+    detail: str
+    rejected_ideas: Sequence[str] = ()
+    signature: str | None = None
+    tool_executions_count: int = 0
+    model: str | None = None
+    generated_at_utc: datetime | str | None = None
+    written_at_utc: datetime | str | None = None
+
+
+@dataclass(frozen=True)
+class PrecacheFailureWriteResult:
+    """Summary for an append-or-dedupe failure parquet write."""
+
+    output_path: Path
+    written_count: int
+    replaced_count: int
+    total_count: int
+    failure_ids: tuple[str, ...]
+
+
 def make_plan_id(
     *,
     bucket_id: str,
@@ -107,6 +156,71 @@ def make_plan_id(
         "fsq_place_ids": ids_sorted,
     }
     return hashlib.sha256(_json_dumps(payload).encode("utf-8")).hexdigest()
+
+
+def make_failure_id(
+    *,
+    bucket_id: str,
+    template_id: str,
+    plan_time_iso: str,
+    attempt_index: int,
+) -> str:
+    """Return the stable failure id for one bucket/template/time/attempt cell."""
+
+    clean_bucket_id = _required_text(bucket_id, "bucket_id")
+    clean_template_id = _required_text(template_id, "template_id")
+    normalized_plan_time_iso = _normalize_iso_timestamp_preserving_offset(
+        plan_time_iso,
+        field_name="plan_time_iso",
+    )
+    clean_attempt_index = _required_nonnegative_int(attempt_index, "attempt_index")
+    payload = {
+        "bucket_id": clean_bucket_id,
+        "template_id": clean_template_id,
+        "plan_time_iso": normalized_plan_time_iso,
+        "attempt_index": clean_attempt_index,
+    }
+    return hashlib.sha256(_json_dumps(payload).encode("utf-8")).hexdigest()
+
+
+def build_precache_failure_output(
+    *,
+    bucket_id: str,
+    template_id: str,
+    plan_time_iso: str,
+    attempt_index: int,
+    failure: "PrecachePlannerFailure",
+    generated_at_utc: datetime | str | None = None,
+    written_at_utc: datetime | str | None = None,
+) -> PrecacheFailureOutput:
+    """Wrap one ``PrecachePlannerFailure`` with the metadata needed for parquet output."""
+
+    if not hasattr(failure, "reason") or not hasattr(failure, "detail"):
+        raise PrecacheOutputError(
+            "failure must expose PrecachePlannerFailure-like reason/detail attributes."
+        )
+
+    rejected_ideas = getattr(failure, "rejected_ideas", ())
+    tool_executions = getattr(failure, "tool_executions", ())
+    signature = getattr(failure, "signature", None)
+    model = getattr(failure, "model", None)
+    return PrecacheFailureOutput(
+        bucket_id=bucket_id,
+        template_id=template_id,
+        plan_time_iso=plan_time_iso,
+        attempt_index=attempt_index,
+        reason=_required_text(getattr(failure, "reason"), "failure.reason"),
+        detail=_required_text(getattr(failure, "detail"), "failure.detail"),
+        rejected_ideas=tuple(_string_list(rejected_ideas, field_name="failure.rejected_ideas")),
+        signature=_optional_text(signature),
+        tool_executions_count=_required_nonnegative_int(
+            len(tool_executions),
+            "failure.tool_executions_count",
+        ),
+        model=_optional_text(model),
+        generated_at_utc=generated_at_utc or _timestamp_now(),
+        written_at_utc=written_at_utc,
+    )
 
 
 def fsq_place_ids_sorted_signature(fsq_place_ids: Sequence[str]) -> str:
@@ -171,6 +285,63 @@ def append_precache_plans(
     )
 
 
+def append_precache_failures(
+    failures: Sequence[PrecacheFailureOutput],
+    *,
+    output_path: Path | str = DEFAULT_PRECACHE_FAILURE_OUTPUT_PATH,
+) -> PrecacheFailureWriteResult:
+    """Append planner failures to parquet, replacing existing rows by failure_id."""
+
+    if not failures:
+        raise ValueError("failures must contain at least one PrecacheFailureOutput.")
+
+    path = Path(output_path)
+    _require_parquet_path(path, label="pre-cache failure output")
+    written_at_utc = _timestamp_now()
+    rows = [_failure_record_to_row(failure, written_at_utc=written_at_utc) for failure in failures]
+    failure_ids = tuple(str(row["failure_id"]) for row in rows)
+    duplicate_failure_ids = sorted(_duplicates(failure_ids))
+    if duplicate_failure_ids:
+        logger.error(
+            "Incoming pre-cache failures contain duplicate failure_ids=%s.",
+            duplicate_failure_ids,
+        )
+        raise PrecacheOutputError(
+            "Incoming pre-cache failures contain duplicate failure_ids "
+            f"{duplicate_failure_ids}."
+        )
+
+    new_df = pd.DataFrame(rows, columns=list(FAILURE_OUTPUT_COLUMNS))
+    if path.exists():
+        existing_df = read_precache_failures(path)
+        duplicate_mask = existing_df["failure_id"].isin(failure_ids)
+        replaced_count = int(duplicate_mask.sum())
+        combined_df = pd.concat(
+            [existing_df.loc[~duplicate_mask], new_df],
+            ignore_index=True,
+        )
+    else:
+        replaced_count = 0
+        combined_df = new_df
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    combined_df.to_parquet(path, index=False)
+    logger.info(
+        "Wrote %d pre-cache failures to %s; replaced=%d total=%d.",
+        len(new_df),
+        path,
+        replaced_count,
+        len(combined_df),
+    )
+    return PrecacheFailureWriteResult(
+        output_path=path,
+        written_count=len(new_df),
+        replaced_count=replaced_count,
+        total_count=len(combined_df),
+        failure_ids=failure_ids,
+    )
+
+
 def read_precache_output(
     output_path: Path | str = DEFAULT_PRECACHE_OUTPUT_PATH,
 ) -> pd.DataFrame:
@@ -184,6 +355,39 @@ def read_precache_output(
     df = pd.read_parquet(path)
     _validate_output_schema(df, source=path)
     return df.loc[:, list(OUTPUT_COLUMNS)].copy()
+
+
+def read_precache_failures(
+    output_path: Path | str = DEFAULT_PRECACHE_FAILURE_OUTPUT_PATH,
+) -> pd.DataFrame:
+    """Read the generated failure parquet output after validating its schema."""
+
+    path = Path(output_path)
+    _require_parquet_path(path, label="pre-cache failure output")
+    if not path.exists():
+        raise FileNotFoundError(f"Pre-cache failure parquet not found at {path}.")
+
+    df = pd.read_parquet(path)
+    _validate_failure_output_schema(df, source=path)
+    return df.loc[:, list(FAILURE_OUTPUT_COLUMNS)].copy()
+
+
+def summarize_failures_by_reason(
+    output_path: Path | str = DEFAULT_PRECACHE_FAILURE_OUTPUT_PATH,
+) -> dict[str, int]:
+    """Return failure counts by reason for run-summary reporting."""
+
+    path = Path(output_path)
+    _require_parquet_path(path, label="pre-cache failure output")
+    if not path.exists():
+        logger.info("No pre-cache failure parquet exists at %s; returning empty summary.", path)
+        return {}
+
+    df = read_precache_failures(path)
+    if df.empty:
+        return {}
+    counts = df["reason"].astype(str).value_counts(sort=False).sort_index().to_dict()
+    return {str(reason): int(count) for reason, count in counts.items()}
 
 
 def read_existing_signatures(
@@ -246,13 +450,16 @@ def _record_to_row(
         "bucket_id": bucket_id,
         "bucket_label": _required_text(bucket_metadata["label"], "bucket_metadata.label"),
         "bucket_latitude": _required_float(
-            bucket_metadata["latitude"], "bucket_metadata.latitude"
+            bucket_metadata["latitude"],
+            "bucket_metadata.latitude",
         ),
         "bucket_longitude": _required_float(
-            bucket_metadata["longitude"], "bucket_metadata.longitude"
+            bucket_metadata["longitude"],
+            "bucket_metadata.longitude",
         ),
         "bucket_radius_km": _required_positive_float(
-            bucket_metadata["radius_km"], "bucket_metadata.radius_km"
+            bucket_metadata["radius_km"],
+            "bucket_metadata.radius_km",
         ),
         "bucket_transport_mode": _required_text(
             bucket_metadata["transport_mode"],
@@ -303,6 +510,61 @@ def _record_to_row(
     return row
 
 
+def _failure_record_to_row(
+    record: PrecacheFailureOutput,
+    *,
+    written_at_utc: str,
+) -> dict[str, Any]:
+    bucket_id = _required_text(record.bucket_id, "bucket_id")
+    template_id = _required_text(record.template_id, "template_id")
+    plan_time_iso = _normalize_iso_timestamp_preserving_offset(
+        record.plan_time_iso,
+        field_name="plan_time_iso",
+    )
+    attempt_index = _required_nonnegative_int(record.attempt_index, "attempt_index")
+    reason = _required_text(record.reason, "reason")
+    detail = _required_text(record.detail, "detail")
+    rejected_ideas = _string_list(record.rejected_ideas, field_name="rejected_ideas")
+    signature = _optional_text(record.signature)
+    tool_executions_count = _required_nonnegative_int(
+        record.tool_executions_count,
+        "tool_executions_count",
+    )
+    model = _optional_text(record.model)
+    generated_at_utc = (
+        _normalize_timestamp(record.generated_at_utc, field_name="generated_at_utc")
+        if record.generated_at_utc is not None
+        else _timestamp_now()
+    )
+    failure_id = make_failure_id(
+        bucket_id=bucket_id,
+        template_id=template_id,
+        plan_time_iso=plan_time_iso,
+        attempt_index=attempt_index,
+    )
+    row = {
+        "failure_id": failure_id,
+        "bucket_id": bucket_id,
+        "template_id": template_id,
+        "plan_time_iso": plan_time_iso,
+        "attempt_index": attempt_index,
+        "reason": reason,
+        "detail": detail,
+        "rejected_ideas_json": _json_dumps(rejected_ideas),
+        "signature": signature,
+        "tool_executions_count": tool_executions_count,
+        "model": model,
+        "generated_at_utc": generated_at_utc,
+        "written_at_utc": _normalize_timestamp(
+            record.written_at_utc,
+            field_name="written_at_utc",
+        )
+        if record.written_at_utc is not None
+        else written_at_utc,
+    }
+    return row
+
+
 def _validate_output_schema(df: pd.DataFrame, *, source: Path) -> None:
     actual = tuple(str(column) for column in df.columns)
     missing = sorted(set(OUTPUT_COLUMNS) - set(actual))
@@ -329,6 +591,35 @@ def _validate_output_schema(df: pd.DataFrame, *, source: Path) -> None:
         )
         raise PrecacheOutputError(
             f"Pre-cache output parquet {source} contains duplicate plan_ids {duplicates}."
+        )
+
+
+def _validate_failure_output_schema(df: pd.DataFrame, *, source: Path) -> None:
+    actual = tuple(str(column) for column in df.columns)
+    missing = sorted(set(FAILURE_OUTPUT_COLUMNS) - set(actual))
+    extra = sorted(set(actual) - set(FAILURE_OUTPUT_COLUMNS))
+    if missing or extra:
+        logger.error(
+            "Pre-cache failure parquet %s has invalid schema missing=%s extra=%s.",
+            source,
+            missing,
+            extra,
+        )
+        raise PrecacheOutputError(
+            f"Pre-cache failure parquet {source} has invalid schema. "
+            f"Missing columns: {missing}. Extra columns: {extra}."
+        )
+    if df["failure_id"].duplicated().any():
+        duplicates = sorted(
+            df.loc[df["failure_id"].duplicated(), "failure_id"].astype(str).unique()
+        )
+        logger.error(
+            "Pre-cache failure parquet %s contains duplicate failure_ids=%s.",
+            source,
+            duplicates,
+        )
+        raise PrecacheOutputError(
+            f"Pre-cache failure parquet {source} contains duplicate failure_ids {duplicates}."
         )
 
 
@@ -466,6 +757,40 @@ def _optional_float(value: Any, field_name: str) -> float | None:
     return parsed
 
 
+def _required_nonnegative_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise PrecacheOutputError(f"{field_name} must be a non-negative integer.")
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise PrecacheOutputError(f"{field_name} must be a non-negative integer.")
+        parsed = int(value)
+        exact_match = True
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            raise PrecacheOutputError(f"{field_name} must be a non-negative integer.")
+        if text.startswith("+"):
+            text = text[1:]
+        if not text.isdigit():
+            raise PrecacheOutputError(f"{field_name} must be a non-negative integer.")
+        parsed = int(text)
+        exact_match = True
+    else:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise PrecacheOutputError(f"{field_name} must be a non-negative integer.") from exc
+        try:
+            exact_match = value == parsed
+        except Exception:
+            exact_match = True
+    if not exact_match:
+        raise PrecacheOutputError(f"{field_name} must be a non-negative integer.")
+    if parsed < 0:
+        raise PrecacheOutputError(f"{field_name} must be a non-negative integer.")
+    return parsed
+
+
 def _required_bool(value: Any, field_name: str) -> bool:
     if not isinstance(value, bool):
         raise PrecacheOutputError(f"{field_name} must be a boolean.")
@@ -506,6 +831,23 @@ def _normalize_timestamp(value: datetime | str, *, field_name: str) -> str:
             raise PrecacheOutputError(f"{field_name} must include timezone info.")
         return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
     raise PrecacheOutputError(f"{field_name} must be a timezone-aware datetime or ISO string.")
+
+
+def _normalize_iso_timestamp_preserving_offset(value: Any, *, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise PrecacheOutputError(f"{field_name} must be a non-empty ISO timestamp.")
+    text = value.strip()
+    if not text:
+        raise PrecacheOutputError(f"{field_name} must be a non-empty ISO timestamp.")
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        logger.error("%s is not a valid ISO timestamp: %r.", field_name, value)
+        raise PrecacheOutputError(f"{field_name} must be a valid ISO timestamp.") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        logger.error("%s must include timezone info: %r.", field_name, value)
+        raise PrecacheOutputError(f"{field_name} must include timezone info.")
+    return parsed.isoformat()
 
 
 def _timestamp_now() -> str:

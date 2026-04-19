@@ -75,6 +75,38 @@ class FakeMapsClient:
         )
 
 
+class FakePlaceResolver:
+    def __init__(self, failed_ids: set[str] | None = None) -> None:
+        self.failed_ids = failed_ids or set()
+
+    async def resolve_place_match(self, fsq_place_id: str) -> object:
+        if fsq_place_id in self.failed_ids:
+            return type("Failure", (), {"reason": "cached failure"})()
+        return MapsPlaceMatch(
+            candidate_place=CandidatePlace(
+                fsq_place_id=fsq_place_id,
+                name=fsq_place_id,
+                latitude=-33.86,
+                longitude=151.20,
+                address="1 Date St",
+                locality="Sydney",
+                region="NSW",
+                postcode="2000",
+            ),
+            google_place=MapsPlace(
+                place_id=f"google-{fsq_place_id}",
+                resource_name=f"places/google-{fsq_place_id}",
+                display_name=f"Google {fsq_place_id}",
+                location=LatLng(latitude=-33.86, longitude=151.20),
+                formatted_address="1 Date St, Sydney NSW 2000",
+                business_status="OPERATIONAL",
+            ),
+            straight_line_distance_meters=10.0,
+            name_similarity=1.0,
+            match_kind="address_match",
+        )
+
+
 class RagPlaceSearchToolTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.tool = RagPlaceSearchTool(
@@ -196,6 +228,34 @@ class RagPlaceSearchToolTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual("dessert-only", result["scope_label"])
         self.assertEqual(["dessert-1"], [item["fsq_place_id"] for item in result["results"]])
+
+    async def test_validated_search_excludes_failed_fsq_id_on_next_search(self) -> None:
+        scoped_tool = RagPlaceSearchTool(
+            vector_store=ExactVectorStore(_documents_df(), _embeddings_df()),
+            embedding_client=QueryEmbeddingClient(),
+            default_top_k=2,
+            max_top_k=5,
+            candidate_place_ids=("restaurant-1", "dessert-1"),
+            validated_only=True,
+            place_resolver=FakePlaceResolver(failed_ids={"dessert-1"}),
+        )
+
+        result = await scoped_tool.search_near_latlng(
+            {
+                "query_text": "dessert near landmark",
+                "latitude": -33.86,
+                "longitude": 151.20,
+                "max_km": 0.2,
+                "top_k": 2,
+                "exclude_place_ids": ["restaurant-1"],
+            }
+        )
+
+        self.assertEqual([], result["results"])
+        self.assertEqual(
+            "No Maps-validated candidate places survived filtering.",
+            result["empty_reason"],
+        )
 
     async def test_search_near_latlng_returns_empty_reason_when_no_places_are_nearby(self) -> None:
         result = await self.tool.search_near_latlng(
@@ -606,6 +666,7 @@ class DateIdeaAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, call_count["value"])
         self.assertEqual("anthropic/claude-sonnet-4.6", observed_bodies[0]["model"])
         self.assertEqual({"effort": "medium", "exclude": True}, observed_bodies[0]["reasoning"])
+        self.assertNotIn("response_format", observed_bodies[0])
         self.assertEqual(1, len(result.ideas))
         self.assertEqual("Dinner With A Sweet Finish", result.ideas[0].title)
         self.assertEqual("restaurant-1", result.ideas[0].stops[0].fsq_place_id)

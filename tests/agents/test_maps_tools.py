@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pandas as pd
 
@@ -84,6 +86,48 @@ class MapsVerifyPlaceToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["matched"])
         self.assertIsNone(result["google_place_id"])
         self.assertIn("no confident match", result["failure_reason"])
+
+    async def test_parquet_cache_persists_success_and_failure(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "maps_cache.parquet"
+            success_cache = MapsVerificationCache(cache_path=cache_path)
+            success_cache.put_place_match("restaurant-1", _match(business_status="OPERATIONAL"))
+
+            failure_client = FakeMapsClient(NoPlaceMatchError("no confident match"))
+            failure_tool = MapsVerifyPlaceTool(
+                maps_client=failure_client,
+                rag_documents=pd.concat(
+                    [
+                        _documents_df(),
+                        pd.DataFrame(
+                            [
+                                {
+                                    "fsq_place_id": "dessert-1",
+                                    "name": "Dessert Spot",
+                                    "latitude": -33.861,
+                                    "longitude": 151.201,
+                                    "locality": "Sydney",
+                                    "region": "NSW",
+                                    "postcode": "2000",
+                                }
+                            ]
+                        ),
+                    ],
+                    ignore_index=True,
+                ),
+                cache=success_cache,
+            )
+            await failure_tool.verify({"fsq_place_id": "dessert-1"})
+
+            reloaded = MapsVerificationCache(cache_path=cache_path)
+            cached_success = reloaded.get_place_match("restaurant-1")
+            cached_failure = reloaded.get_place_match("dessert-1")
+
+            self.assertIsInstance(cached_success, MapsPlaceMatch)
+            assert isinstance(cached_success, MapsPlaceMatch)
+            self.assertEqual("google-1", cached_success.google_place.place_id)
+            self.assertIsNotNone(cached_failure)
+            self.assertIn("no confident match", getattr(cached_failure, "reason", ""))
 
     async def test_ambiguous_place_match_returns_failure_reason(self) -> None:
         client = FakeMapsClient(AmbiguousPlaceMatchError("two plausible matches"))

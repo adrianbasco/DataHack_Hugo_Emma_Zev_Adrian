@@ -23,6 +23,7 @@ class CandidatePlace:
     name: str
     latitude: float | None
     longitude: float | None
+    address: str | None = None
     locality: str | None = None
     region: str | None = None
     postcode: str | None = None
@@ -116,6 +117,7 @@ class MapsPlaceMatch:
     google_place: MapsPlace
     straight_line_distance_meters: float
     name_similarity: float
+    match_kind: str = "coord_name"
 
 
 class TravelMode(str, Enum):

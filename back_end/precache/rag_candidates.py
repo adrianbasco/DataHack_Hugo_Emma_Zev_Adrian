@@ -28,6 +28,7 @@ def candidate_place_from_rag_row(row: Mapping[str, Any]) -> CandidatePlace:
         name=name,
         latitude=latitude,
         longitude=longitude,
+        address=_optional_text(row.get("address")),
         locality=_optional_text(row.get("locality")),
         region=_optional_text(row.get("region")),
         postcode=_optional_text(row.get("postcode")),

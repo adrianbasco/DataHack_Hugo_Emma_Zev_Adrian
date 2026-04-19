@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import os
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import httpx
 
+from back_end.clients.api_trace import ApiTraceLogger
 from back_end.clients.openrouter import (
     OpenRouterAgentLoopError,
     OpenRouterClient,
@@ -176,6 +179,54 @@ class OpenRouterClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, attempts["count"])
         self.assertEqual("Recovered.", response.output_text)
 
+    async def test_create_chat_completion_writes_api_trace_file(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            trace_path = Path(temp_dir) / "api_trace.jsonl"
+
+            def handler(request: httpx.Request) -> httpx.Response:
+                return _make_response(
+                    request,
+                    200,
+                    {
+                        "id": "resp_1",
+                        "model": "openai/gpt-4o-mini",
+                        "choices": [
+                            {
+                                "finish_reason": "stop",
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "Logged.",
+                                },
+                            }
+                        ],
+                    },
+                )
+
+            client = OpenRouterClient(
+                self.settings,
+                http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+                trace_logger=ApiTraceLogger(trace_path),
+            )
+            self.addAsyncCleanup(client.aclose)
+
+            await client.create_chat_completion(messages=self.messages)
+
+            entries = [
+                json.loads(line)
+                for line in trace_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(1, len(entries))
+            entry = entries[0]
+            self.assertEqual("openrouter", entry["service"])
+            self.assertEqual("POST", entry["request"]["method"])
+            self.assertEqual("__REDACTED__", entry["request"]["headers"]["Authorization"])
+            self.assertEqual("openai/gpt-4o-mini", entry["request"]["body"]["model"])
+            self.assertEqual(
+                "Logged.",
+                entry["response"]["body"]["choices"][0]["message"]["content"],
+            )
+
     async def test_create_chat_completion_raises_on_non_retryable_http_error(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return _make_response(
@@ -295,6 +346,182 @@ class OpenRouterClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("assistant", observed_tool_messages[0]["role"])
         self.assertEqual("tool", observed_tool_messages[1]["role"])
         self.assertEqual("call_1", observed_tool_messages[1]["tool_call_id"])
+
+    async def test_run_agent_compacts_search_tool_output_in_transcript(self) -> None:
+        call_counter = {"count": 0}
+        observed_tool_messages: list[dict[str, object]] = []
+        tool = AgentTool(
+            definition=OpenRouterFunctionTool(
+                name="search_rag_places",
+                description="Search places.",
+                parameters_json_schema={"type": "object"},
+            ),
+            handler=lambda _arguments: {
+                "query_text": "romantic dinner",
+                "results": [
+                    {
+                        "fsq_place_id": "restaurant-1",
+                        "name": "Romantic Restaurant",
+                        "final_score": 0.91,
+                        "template_stop_tags": ["restaurant", "bar", "wine_bar"],
+                        "ambience_tags": ["romantic", "cozy", "quiet", "elegant"],
+                        "setting_tags": ["intimate", "candlelit", "indoor"],
+                        "drink_tags": ["wine", "cocktails", "beer", "whisky"],
+                        "evidence_snippets": [
+                            "A candlelit dining room.",
+                            "Long degustation menu.",
+                        ],
+                        "score_breakdown": {"semantic": 0.5},
+                        "document_hash": "hash-1",
+                    }
+                ],
+            },
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            call_counter["count"] += 1
+            body = json.loads(request.content.decode("utf-8"))
+            if call_counter["count"] == 1:
+                return _make_response(
+                    request,
+                    200,
+                    {
+                        "id": "resp_tool",
+                        "model": "openai/gpt-4o-mini",
+                        "choices": [
+                            {
+                                "finish_reason": "tool_calls",
+                                "message": {
+                                    "role": "assistant",
+                                    "content": None,
+                                    "tool_calls": [
+                                        {
+                                            "id": "call_1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "search_rag_places",
+                                                "arguments": "{\"query_text\":\"romantic dinner\"}",
+                                            },
+                                        }
+                                    ],
+                                },
+                            }
+                        ],
+                    },
+                )
+            observed_tool_messages.extend(body["messages"][-2:])
+            return _make_response(
+                request,
+                200,
+                {
+                    "id": "resp_final",
+                    "model": "openai/gpt-4o-mini",
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {
+                                "role": "assistant",
+                                "content": "done",
+                            },
+                        }
+                    ],
+                },
+            )
+
+        client = OpenRouterClient(
+            self.settings,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        self.addAsyncCleanup(client.aclose)
+
+        result = await client.run_agent(messages=self.messages, tools=[tool])
+
+        self.assertEqual("done", result.final_response.output_text)
+        self.assertEqual(1, len(result.tool_executions))
+        raw_output = result.tool_executions[0].output_text
+        compact_output = observed_tool_messages[1]["content"]
+        self.assertIn("score_breakdown", raw_output)
+        self.assertIn("document_hash", raw_output)
+        self.assertNotIn("score_breakdown", compact_output)
+        self.assertNotIn("document_hash", compact_output)
+        self.assertIn("A candlelit dining room.", compact_output)
+        self.assertNotIn("Long degustation menu.", compact_output)
+
+    async def test_run_agent_strips_assistant_tool_call_chatter_from_transcript(self) -> None:
+        call_counter = {"count": 0}
+        observed_tool_messages: list[dict[str, object]] = []
+        tool = AgentTool(
+            definition=OpenRouterFunctionTool(
+                name="lookup_places",
+                description="Find places for a vibe.",
+                parameters_json_schema={"type": "object"},
+            ),
+            handler=self._lookup_places_tool,
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            call_counter["count"] += 1
+            body = json.loads(request.content.decode("utf-8"))
+            if call_counter["count"] == 1:
+                return _make_response(
+                    request,
+                    200,
+                    {
+                        "id": "resp_tool",
+                        "model": "openai/gpt-4o-mini",
+                        "choices": [
+                            {
+                                "finish_reason": "tool_calls",
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "I will now search for places.",
+                                    "tool_calls": [
+                                        {
+                                            "id": "call_1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "lookup_places",
+                                                "arguments": "{\"vibe\":\"romantic\"}",
+                                            },
+                                        }
+                                    ],
+                                },
+                            }
+                        ],
+                    },
+                )
+
+            observed_tool_messages.extend(body["messages"][-2:])
+            return _make_response(
+                request,
+                200,
+                {
+                    "id": "resp_final",
+                    "model": "openai/gpt-4o-mini",
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {
+                                "role": "assistant",
+                                "content": "done",
+                            },
+                        }
+                    ],
+                },
+            )
+
+        client = OpenRouterClient(
+            self.settings,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        self.addAsyncCleanup(client.aclose)
+
+        result = await client.run_agent(messages=self.messages, tools=[tool])
+
+        self.assertEqual("done", result.final_response.output_text)
+        self.assertEqual("assistant", observed_tool_messages[0]["role"])
+        self.assertIsNone(observed_tool_messages[0]["content"])
+        self.assertEqual("tool", observed_tool_messages[1]["role"])
 
     async def test_run_agent_raises_on_invalid_tool_arguments(self) -> None:
         tool = AgentTool(
