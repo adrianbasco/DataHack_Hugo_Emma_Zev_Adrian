@@ -1,16 +1,16 @@
 import { useCallback, useState } from "react";
 import { StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
-import PlanCard from "../components/PlanCard";
+import PlanCard from "../../components/PlanCard";
 import {
   ActionButton,
   Eyebrow,
   ScreenShell,
   SurfaceCard,
   palette,
-} from "../components/ui";
-import { clearSavedPlans, getSavedPlans } from "../lib/storage";
-import { Plan } from "../lib/types";
+} from "../../components/ui";
+import { clearSavedPlans, getSavedPlans } from "../../lib/storage";
+import { Plan } from "../../lib/types";
 
 const MAX_CONTENT_WIDTH = 420;
 
@@ -133,11 +133,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   frame: {
-    width: "100%",
-    alignSelf: "center",
-    gap: 18,
-    paddingBottom: 20,
-  },
+  width: "100%",
+  alignSelf: "center",
+  gap: 18,
+  paddingBottom: 110,
+},
   header: {
     gap: 8,
   },
